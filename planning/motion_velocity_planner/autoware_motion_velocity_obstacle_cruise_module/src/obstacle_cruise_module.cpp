@@ -801,7 +801,7 @@ bool ObstacleCruiseModule::is_obstacle_crossing(
   const std::vector<TrajectoryPoint> & traj_points,
   const std::shared_ptr<PlannerData::Object> object) const
 {
-  const double diff_angle = utils::calc_diff_angle_against_trajectory(
+  const double diff_angle = autoware::motion_utils::calcDiffAngleAgainstTrajectory(
     traj_points, object->predicted_object.kinematics.initial_pose_with_covariance.pose);
 
   // NOTE: Currently predicted objects does not have orientation availability even
