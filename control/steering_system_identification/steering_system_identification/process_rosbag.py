@@ -158,8 +158,24 @@ def calculate_dt_from_timestamps(timestamps):
     
     return dt
 
-def simulate_with_transitions(simulator, commanded_steering, measured_steering, filtered_indices, original_autonomous_mask, delay_samples, tau):
-    """Simulate steering with proper initial condition resets at manual-to-autonomous transitions"""
+def simulate_with_transitions(simulator, commanded_steering, measured_steering, filtered_indices, original_autonomous_mask, delay_samples, tau_values):
+    """Simulate steering with proper initial condition resets at manual-to-autonomous transitions
+    
+    Args:
+        tau_values: Can be either a single float (constant tau) or array of tau values for each time step
+    """
+    
+    # Handle both single tau value and time-varying tau values
+    if isinstance(tau_values, (int, float)):
+        # Single tau value - use original behavior
+        tau_array = np.full(len(commanded_steering), tau_values)
+        print(f"Using constant tau = {tau_values:.6f} for simulation")
+    else:
+        # Time-varying tau values
+        tau_array = np.array(tau_values)
+        if len(tau_array) != len(commanded_steering):
+            raise ValueError(f"Length of tau_values ({len(tau_array)}) must match commanded_steering ({len(commanded_steering)})")
+        print(f"Using time-varying tau values (range: {np.min(tau_array):.6f} - {np.max(tau_array):.6f})")
     
     # Create full simulation result array
     full_simulated = np.full(len(original_autonomous_mask), np.nan)
@@ -209,17 +225,16 @@ def simulate_with_transitions(simulator, commanded_steering, measured_steering, 
             
         # Get the segment data
         segment_commands = u_delayed[filtered_start:filtered_end+1]
+        segment_tau_values = tau_array[filtered_start:filtered_end+1]
         
         # Use measured steering at start of segment as initial condition
         initial_steering = measured_steering[filtered_start]
         
         print(f"Simulating segment {seg_start}-{seg_end} (filtered {filtered_start}-{filtered_end}) with initial steering {initial_steering:.4f}")
         
-        # Simulate this segment
-        segment_result = simulator.simulate_trajectory(
-            segment_commands, 
-            initial_steering=initial_steering, 
-            tau=tau
+        # Simulate this segment with time-varying tau
+        segment_result = simulate_trajectory_with_varying_tau(
+            simulator, segment_commands, segment_tau_values, initial_steering
         )
         
         # Map results back to full array
@@ -229,6 +244,23 @@ def simulate_with_transitions(simulator, commanded_steering, measured_steering, 
                 full_simulated[orig_idx] = result
     
     return full_simulated
+
+def simulate_trajectory_with_varying_tau(simulator, u_commands, tau_values, initial_steering=0.0):
+    """Simulate trajectory with time-varying tau values"""
+    
+    # Initialize state
+    state = np.array([initial_steering, tau_values[0]])
+    results = [initial_steering]
+    
+    for i, u_cmd in enumerate(u_commands[:-1]):  # Skip last command as we don't need to simulate beyond
+        # Update tau in the state for this time step
+        state[1] = tau_values[i]
+        
+        # Simulate one step
+        state = simulator.simulate_step(state, u_cmd)
+        results.append(state[0])  # Store steering angle
+        
+    return np.array(results)
 
 def calculate_rmse_with_transitions(simulated_full, measured_steering, filtered_indices, original_autonomous_mask):
     """Calculate RMSE accounting for transitions between manual and autonomous control"""
@@ -404,10 +436,10 @@ def main():
     delay_samples = int(round(args.delay / dt))
     
     # Simulate with proper initial condition resets at transitions
-    print("Simulating with final MHE estimate...")
+    print("Simulating with time-varying MHE estimates...")
     simulated_steering_final_full = simulate_with_transitions(
         simulator, commanded_steering, measured_steering, filtered_indices, 
-        original_autonomous_mask, delay_samples, mhe.get_time_constant()
+        original_autonomous_mask, delay_samples, time_constants
     )
     
     print("Simulating with initial tau estimate...")
@@ -423,14 +455,14 @@ def main():
         simulated_steering_initial_full, measured_steering, filtered_indices, original_autonomous_mask
     )
     
-    print("Final MHE tau RMSE by segment:")
+    print("Time-varying MHE tau RMSE by segment:")
     rmse_final, final_segment_rmses = calculate_rmse_with_transitions(
         simulated_steering_final_full, measured_steering, filtered_indices, original_autonomous_mask
     )
     
     print(f"\nModel RMSE Summary:")
-    print(f"Initial tau ({args.initial_tau:.3f}s): {rmse_initial:.6f} rad")
-    print(f"Final MHE tau ({mhe.get_time_constant():.3f}s): {rmse_final:.6f} rad")
+    print(f"Initial tau (constant {args.initial_tau:.3f}s): {rmse_initial:.6f} rad")
+    print(f"Time-varying MHE tau (final: {mhe.get_time_constant():.3f}s): {rmse_final:.6f} rad")
     if rmse_initial != float('inf') and rmse_final != float('inf'):
         print(f"RMSE improvement: {((rmse_initial - rmse_final) / rmse_initial * 100):.1f}%")
     
@@ -486,8 +518,8 @@ def main():
     
     plt.plot(all_timestamps_sec, full_commanded_steering, label='Commanded Steering', alpha=0.7)
     plt.plot(all_timestamps_sec, full_measured_steering, label='Measured Steering', alpha=0.7)
-    plt.plot(all_timestamps_sec, full_simulated_initial, label=f'Simulated (Initial τ={args.initial_tau:.3f}s)', linestyle=':', alpha=0.8)
-    plt.plot(all_timestamps_sec, full_simulated_final, label=f'Simulated (MHE τ={mhe.get_time_constant():.3f}s)', linestyle='--', alpha=0.8)
+    plt.plot(all_timestamps_sec, full_simulated_initial, label=f'Simulated (Constant τ={args.initial_tau:.3f}s)', linestyle=':', alpha=0.8)
+    plt.plot(all_timestamps_sec, full_simulated_final, label=f'Simulated (Time-varying τ, final={mhe.get_time_constant():.3f}s)', linestyle='--', alpha=0.8)
     
     plt.xlabel('Time (s)')
     plt.ylabel('Steering Angle (rad)')
@@ -530,13 +562,13 @@ def main():
         if not np.isnan(simulated_steering_final_full[original_idx]):
             full_error_final[original_idx] = simulated_steering_final_full[original_idx] - measured_steering[i]
     
-    plt.plot(all_timestamps_sec, full_error_initial, label=f'Error (Initial τ={args.initial_tau:.3f}s)', alpha=0.7)
-    plt.plot(all_timestamps_sec, full_error_final, label=f'Error (MHE τ={mhe.get_time_constant():.3f}s)', alpha=0.7)
+    plt.plot(all_timestamps_sec, full_error_initial, label=f'Error (Constant τ={args.initial_tau:.3f}s)', alpha=0.7)
+    plt.plot(all_timestamps_sec, full_error_final, label=f'Error (Time-varying τ, final={mhe.get_time_constant():.3f}s)', alpha=0.7)
     
     plt.xlabel('Time (s)')
     plt.ylabel('Error (rad)')
     plt.legend()
-    plt.title(f'Model Errors - Initial RMSE: {rmse_initial:.6f}, MHE RMSE: {rmse_final:.6f} rad')
+    plt.title(f'Model Errors - Constant τ RMSE: {rmse_initial:.6f}, Time-varying τ RMSE: {rmse_final:.6f} rad')
     plt.grid(True, alpha=0.3)
     
     plt.tight_layout()
