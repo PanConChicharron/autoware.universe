@@ -13,8 +13,8 @@ from mhe import SteeringMHE
 from steering_model import export_steering_model
 from steering_simulator import SteeringSimulator
 
-def read_messages(bag_path):
-    """Read messages from the rosbag."""
+def read_messages(bag_path, filter_autonomous=True):
+    """Read messages from the rosbag and filter for autonomous control periods."""
     storage_options = rosbag2_py.StorageOptions(
         uri=bag_path,
         storage_id='sqlite3')
@@ -28,27 +28,86 @@ def read_messages(bag_path):
     topic_types = reader.get_all_topics_and_types()
     type_map = {topic_info.name: topic_info.type for topic_info in topic_types}
     
-    # Filter for diagnostic topic
-    topic_filter = '/control/trajectory_follower/lateral/diagnostic'
+    # Topics to read
+    diagnostic_topic = '/control/trajectory_follower/lateral/diagnostic'
+    operation_mode_topic = '/api/operation_mode/state'
     
-    timestamps = []
-    commanded_steering = []
-    measured_steering = []
+    # Check if required topics exist
+    available_topics = [topic_info.name for topic_info in topic_types]
+    if diagnostic_topic not in available_topics:
+        raise ValueError(f"Required topic '{diagnostic_topic}' not found in rosbag")
     
+    if operation_mode_topic not in available_topics:
+        if filter_autonomous:
+            print(f"Warning: Operation mode topic '{operation_mode_topic}' not found in rosbag.")
+            print("Cannot filter for autonomous control periods. Processing all data instead.")
+        use_operation_mode = False
+    else:
+        use_operation_mode = filter_autonomous
+    
+    # Storage for all messages
+    diagnostic_data = []
+    operation_mode_data = []
+    
+    # Read all messages first
     while reader.has_next():
         topic_name, data, timestamp = reader.read_next()
-        if topic_name == topic_filter:
+        
+        if topic_name == diagnostic_topic:
             msg_type = get_message(type_map[topic_name])
             msg = deserialize_message(data, msg_type)
-            
-            # Extract steering data from diagnostic message
-            # data[1] is commanded steering (mpc-raw)
-            # data[4] is measured steering
-            timestamps.append(timestamp)
-            commanded_steering.append(msg.data[1])
-            measured_steering.append(msg.data[4])
+            diagnostic_data.append({
+                'timestamp': timestamp,
+                'commanded_steering': msg.data[1],  # mpc-raw
+                'measured_steering': msg.data[4]
+            })
+        
+        elif use_operation_mode and topic_name == operation_mode_topic:
+            msg_type = get_message(type_map[topic_name])
+            msg = deserialize_message(data, msg_type)
+            operation_mode_data.append({
+                'timestamp': timestamp,
+                'is_autoware_control_enabled': msg.is_autoware_control_enabled
+            })
     
-    return np.array(timestamps), np.array(commanded_steering), np.array(measured_steering)
+    print(f"Read {len(diagnostic_data)} diagnostic messages")
+    if use_operation_mode:
+        print(f"Read {len(operation_mode_data)} operation mode messages")
+        print("Will filter data to only include autonomous control periods")
+    elif filter_autonomous:
+        print("Autonomous filtering was requested but operation mode topic not available")
+    else:
+        print("Processing all data (autonomous filtering disabled)")
+    
+    # Filter diagnostic data based on operation mode if requested
+    if filter_autonomous and use_operation_mode and len(operation_mode_data) > 0:
+        filtered_data = []
+        
+        for diag in diagnostic_data:
+            # Find the most recent operation mode message before this diagnostic message
+            autoware_enabled = False
+            for op_mode in reversed(operation_mode_data):
+                if op_mode['timestamp'] <= diag['timestamp']:
+                    autoware_enabled = op_mode['is_autoware_control_enabled']
+                    break
+            
+            if autoware_enabled:
+                filtered_data.append(diag)
+        
+        print(f"Filtered to {len(filtered_data)} samples where Autoware control was enabled")
+        print(f"Excluded {len(diagnostic_data) - len(filtered_data)} samples ({(len(diagnostic_data) - len(filtered_data))/len(diagnostic_data)*100:.1f}%)")
+        
+        diagnostic_data = filtered_data
+    
+    if len(diagnostic_data) == 0:
+        raise ValueError("No valid data found after filtering")
+    
+    # Extract arrays
+    timestamps = np.array([d['timestamp'] for d in diagnostic_data])
+    commanded_steering = np.array([d['commanded_steering'] for d in diagnostic_data])
+    measured_steering = np.array([d['measured_steering'] for d in diagnostic_data])
+    
+    return timestamps, commanded_steering, measured_steering
 
 def calculate_dt_from_timestamps(timestamps):
     """Calculate the median sampling time from timestamps."""
@@ -91,6 +150,8 @@ def main():
                         help='Initial time constant estimate in seconds (default: 0.2)')
     parser.add_argument('--topic', type=str, default='/control/trajectory_follower/lateral/diagnostic',
                         help='Topic name for diagnostic data (default: /control/trajectory_follower/lateral/diagnostic)')
+    parser.add_argument('--no-filter-autonomous', action='store_true',
+                        help='Disable filtering for autonomous control periods (process all data)')
     
     args = parser.parse_args()
     
@@ -100,10 +161,14 @@ def main():
         sys.exit(1)
     
     print(f"Processing rosbag: {args.rosbag_path}")
+    if args.no_filter_autonomous:
+        print("Autonomous control filtering: DISABLED - processing all data")
+    else:
+        print("Autonomous control filtering: ENABLED - only processing data when Autoware control is active")
     
     # Process rosbag
     try:
-        timestamps, commanded_steering, measured_steering = read_messages(args.rosbag_path)
+        timestamps, commanded_steering, measured_steering = read_messages(args.rosbag_path, filter_autonomous=not args.no_filter_autonomous)
     except Exception as e:
         print(f"Error reading rosbag: {e}")
         sys.exit(1)
@@ -138,6 +203,7 @@ def main():
     
     # Process data through MHE
     print("Running MHE estimation...")
+    
     for i in range(len(timestamps)):
         mhe.update(commanded_steering[i], measured_steering[i])
         time_constants.append(mhe.get_time_constant())
@@ -186,6 +252,7 @@ def main():
     plt.plot(timestamps, measured_steering, label='Measured Steering', alpha=0.7)
     plt.plot(timestamps, simulated_steering_initial, label=f'Simulated (Initial τ={args.initial_tau:.3f}s)', linestyle=':', alpha=0.8)
     plt.plot(timestamps, simulated_steering_final, label=f'Simulated (MHE τ={mhe.get_time_constant():.3f}s)', linestyle='--', alpha=0.8)
+    
     plt.xlabel('Time (s)')
     plt.ylabel('Steering Angle (rad)')
     plt.legend()
@@ -195,6 +262,7 @@ def main():
     # Plot estimated time constant
     plt.subplot(3, 1, 2)
     plt.plot(timestamps, time_constants)
+    
     plt.xlabel('Time (s)')
     plt.ylabel('Time Constant (s)')
     plt.title('Estimated Time Constant Evolution')
@@ -206,6 +274,7 @@ def main():
     error_final = simulated_steering_final - measured_steering
     plt.plot(timestamps, error_initial, label=f'Error (Initial τ={args.initial_tau:.3f}s)', alpha=0.7)
     plt.plot(timestamps, error_final, label=f'Error (MHE τ={mhe.get_time_constant():.3f}s)', alpha=0.7)
+    
     plt.xlabel('Time (s)')
     plt.ylabel('Error (rad)')
     plt.legend()
