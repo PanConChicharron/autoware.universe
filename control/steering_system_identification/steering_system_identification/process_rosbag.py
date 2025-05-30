@@ -14,7 +14,12 @@ from steering_model import export_steering_model
 from steering_simulator import SteeringSimulator
 
 def read_messages(bag_path, filter_autonomous=True):
-    """Read messages from the rosbag and filter for autonomous control periods."""
+    """Read messages from the rosbag and filter for autonomous control periods.
+    
+    Returns:
+        timestamps, commanded_steering, measured_steering, autonomous_mask
+        where autonomous_mask is a boolean array indicating autonomous periods
+    """
     storage_options = rosbag2_py.StorageOptions(
         uri=bag_path,
         storage_id='sqlite3')
@@ -79,25 +84,44 @@ def read_messages(bag_path, filter_autonomous=True):
     else:
         print("Processing all data (autonomous filtering disabled)")
     
-    # Filter diagnostic data based on operation mode if requested
-    if filter_autonomous and use_operation_mode and len(operation_mode_data) > 0:
-        filtered_data = []
-        
-        for diag in diagnostic_data:
+    # Create autonomous mask for all original data
+    all_timestamps = np.array([d['timestamp'] for d in diagnostic_data])
+    autonomous_mask_all = np.ones(len(diagnostic_data), dtype=bool)  # Default to autonomous if no filtering
+    
+    if use_operation_mode and len(operation_mode_data) > 0:
+        autonomous_mask_all = np.zeros(len(diagnostic_data), dtype=bool)
+        for i, diag in enumerate(diagnostic_data):
             # Find the most recent operation mode message before this diagnostic message
             autoware_enabled = False
             for op_mode in reversed(operation_mode_data):
                 if op_mode['timestamp'] <= diag['timestamp']:
                     autoware_enabled = op_mode['is_autoware_control_enabled']
                     break
-            
-            if autoware_enabled:
+            autonomous_mask_all[i] = autoware_enabled
+    
+    # Filter diagnostic data based on operation mode if requested
+    if filter_autonomous and use_operation_mode and len(operation_mode_data) > 0:
+        filtered_data = []
+        filtered_indices = []
+        
+        for i, diag in enumerate(diagnostic_data):
+            if autonomous_mask_all[i]:
                 filtered_data.append(diag)
+                filtered_indices.append(i)
         
         print(f"Filtered to {len(filtered_data)} samples where Autoware control was enabled")
         print(f"Excluded {len(diagnostic_data) - len(filtered_data)} samples ({(len(diagnostic_data) - len(filtered_data))/len(diagnostic_data)*100:.1f}%)")
         
         diagnostic_data = filtered_data
+        # Create mask for filtered data (all True since we filtered)
+        autonomous_mask = np.ones(len(filtered_data), dtype=bool)
+        # Also return the original mask for plotting
+        original_autonomous_mask = autonomous_mask_all
+    else:
+        # No filtering applied
+        autonomous_mask = autonomous_mask_all
+        original_autonomous_mask = autonomous_mask_all
+        filtered_indices = list(range(len(diagnostic_data)))  # All indices
     
     if len(diagnostic_data) == 0:
         raise ValueError("No valid data found after filtering")
@@ -107,7 +131,7 @@ def read_messages(bag_path, filter_autonomous=True):
     commanded_steering = np.array([d['commanded_steering'] for d in diagnostic_data])
     measured_steering = np.array([d['measured_steering'] for d in diagnostic_data])
     
-    return timestamps, commanded_steering, measured_steering
+    return timestamps, commanded_steering, measured_steering, autonomous_mask, original_autonomous_mask, all_timestamps, filtered_indices
 
 def calculate_dt_from_timestamps(timestamps):
     """Calculate the median sampling time from timestamps."""
@@ -133,6 +157,144 @@ def calculate_dt_from_timestamps(timestamps):
     print(f"  Valid samples: {len(valid_diffs)}/{len(time_diffs)}")
     
     return dt
+
+def simulate_with_transitions(simulator, commanded_steering, measured_steering, filtered_indices, original_autonomous_mask, delay_samples, tau):
+    """Simulate steering with proper initial condition resets at manual-to-autonomous transitions"""
+    
+    # Create full simulation result array
+    full_simulated = np.full(len(original_autonomous_mask), np.nan)
+    
+    # Apply delay to commands
+    u_delayed = np.zeros_like(commanded_steering)
+    for i in range(len(commanded_steering)):
+        if i >= delay_samples:
+            u_delayed[i] = commanded_steering[i - delay_samples]
+        else:
+            u_delayed[i] = 0.0
+    
+    # Find continuous autonomous segments
+    autonomous_segments = []
+    start_idx = None
+    
+    for i, is_autonomous in enumerate(original_autonomous_mask):
+        if is_autonomous and start_idx is None:
+            # Start of autonomous segment
+            start_idx = i
+        elif not is_autonomous and start_idx is not None:
+            # End of autonomous segment
+            autonomous_segments.append((start_idx, i-1))
+            start_idx = None
+    
+    # Handle case where data ends in autonomous mode
+    if start_idx is not None:
+        autonomous_segments.append((start_idx, len(original_autonomous_mask)-1))
+    
+    print(f"Found {len(autonomous_segments)} autonomous segments")
+    
+    # Simulate each autonomous segment separately
+    for seg_start, seg_end in autonomous_segments:
+        # Find corresponding indices in filtered data
+        filtered_start = None
+        filtered_end = None
+        
+        for i, orig_idx in enumerate(filtered_indices):
+            if orig_idx == seg_start:
+                filtered_start = i
+            if orig_idx == seg_end:
+                filtered_end = i
+                break
+        
+        if filtered_start is None or filtered_end is None:
+            continue
+            
+        # Get the segment data
+        segment_commands = u_delayed[filtered_start:filtered_end+1]
+        
+        # Use measured steering at start of segment as initial condition
+        initial_steering = measured_steering[filtered_start]
+        
+        print(f"Simulating segment {seg_start}-{seg_end} (filtered {filtered_start}-{filtered_end}) with initial steering {initial_steering:.4f}")
+        
+        # Simulate this segment
+        segment_result = simulator.simulate_trajectory(
+            segment_commands, 
+            initial_steering=initial_steering, 
+            tau=tau
+        )
+        
+        # Map results back to full array
+        for i, result in enumerate(segment_result):
+            if filtered_start + i < len(filtered_indices):
+                orig_idx = filtered_indices[filtered_start + i]
+                full_simulated[orig_idx] = result
+    
+    return full_simulated
+
+def calculate_rmse_with_transitions(simulated_full, measured_steering, filtered_indices, original_autonomous_mask):
+    """Calculate RMSE accounting for transitions between manual and autonomous control"""
+    
+    # Find continuous autonomous segments
+    autonomous_segments = []
+    start_idx = None
+    
+    for i, is_autonomous in enumerate(original_autonomous_mask):
+        if is_autonomous and start_idx is None:
+            # Start of autonomous segment
+            start_idx = i
+        elif not is_autonomous and start_idx is not None:
+            # End of autonomous segment
+            autonomous_segments.append((start_idx, i-1))
+            start_idx = None
+    
+    # Handle case where data ends in autonomous mode
+    if start_idx is not None:
+        autonomous_segments.append((start_idx, len(original_autonomous_mask)-1))
+    
+    # Calculate RMSE for each segment and combine
+    all_errors = []
+    segment_rmses = []
+    
+    for seg_start, seg_end in autonomous_segments:
+        # Find corresponding indices in filtered data
+        filtered_start = None
+        filtered_end = None
+        
+        for i, orig_idx in enumerate(filtered_indices):
+            if orig_idx == seg_start:
+                filtered_start = i
+            if orig_idx == seg_end:
+                filtered_end = i
+                break
+        
+        if filtered_start is None or filtered_end is None:
+            continue
+        
+        # Get segment data
+        segment_simulated = []
+        segment_measured = []
+        
+        for i in range(filtered_start, filtered_end + 1):
+            if i < len(filtered_indices):
+                orig_idx = filtered_indices[i]
+                if not np.isnan(simulated_full[orig_idx]):
+                    segment_simulated.append(simulated_full[orig_idx])
+                    segment_measured.append(measured_steering[i])
+        
+        if len(segment_simulated) > 0:
+            segment_errors = np.array(segment_simulated) - np.array(segment_measured)
+            segment_rmse = np.sqrt(np.mean(segment_errors**2))
+            segment_rmses.append(segment_rmse)
+            all_errors.extend(segment_errors)
+            
+            print(f"  Segment {seg_start}-{seg_end}: RMSE = {segment_rmse:.6f} rad ({len(segment_simulated)} samples)")
+    
+    # Overall RMSE
+    if len(all_errors) > 0:
+        overall_rmse = np.sqrt(np.mean(np.array(all_errors)**2))
+        print(f"  Overall RMSE: {overall_rmse:.6f} rad ({len(all_errors)} total samples)")
+        return overall_rmse, segment_rmses
+    else:
+        return float('inf'), []
 
 def main():
     # Parse command line arguments
@@ -168,7 +330,7 @@ def main():
     
     # Process rosbag
     try:
-        timestamps, commanded_steering, measured_steering = read_messages(args.rosbag_path, filter_autonomous=not args.no_filter_autonomous)
+        timestamps, commanded_steering, measured_steering, autonomous_mask, original_autonomous_mask, all_timestamps, filtered_indices = read_messages(args.rosbag_path, filter_autonomous=not args.no_filter_autonomous)
     except Exception as e:
         print(f"Error reading rosbag: {e}")
         sys.exit(1)
@@ -204,13 +366,30 @@ def main():
     # Process data through MHE
     print("Running MHE estimation...")
     
+    # Track previous timestamp to detect gaps
+    prev_timestamp = None
+    gap_threshold = 3.0 * dt  # Reset if gap is more than 3x expected dt
+    
     for i in range(len(timestamps)):
+        current_timestamp = timestamps[i]
+        
+        # Check for time gap indicating filtered manual control period
+        if prev_timestamp is not None:
+            time_gap = current_timestamp - prev_timestamp
+            if time_gap > gap_threshold:
+                print(f"Detected time gap of {time_gap:.3f}s at sample {i} (expected {dt:.3f}s)")
+                print(f"Resetting MHE due to filtered manual control period")
+                # Reset MHE for new continuous segment
+                mhe = SteeringMHE(horizon=args.horizon, dt=dt, delay=args.delay, initial_tau=mhe.get_time_constant())
+        
         mhe.update(commanded_steering[i], measured_steering[i])
         time_constants.append(mhe.get_time_constant())
         
         # Print progress occasionally
         if i % 100 == 0:
             print(f"Processed {i}/{len(timestamps)} samples, tau = {mhe.get_time_constant():.4f}")
+        
+        prev_timestamp = current_timestamp
     
     print(f"\nFinal estimates:")
     print(f"Time constant: {mhe.get_time_constant():.6f} s")
@@ -221,37 +400,94 @@ def main():
     # Update simulator with final tau estimate
     simulator.tau = mhe.get_time_constant()
     
-    # Apply delay to commands for simulation
+    # Calculate delay in samples
     delay_samples = int(round(args.delay / dt))
-    u_delayed = np.zeros_like(commanded_steering)
-    for i in range(len(commanded_steering)):
-        if i >= delay_samples:
-            u_delayed[i] = commanded_steering[i - delay_samples]
-        else:
-            u_delayed[i] = 0.0
     
-    # Simulate with final MHE estimate
-    simulated_steering_final = simulator.simulate_trajectory(u_delayed, initial_steering=measured_steering[0], tau=mhe.get_time_constant())
+    # Simulate with proper initial condition resets at transitions
+    print("Simulating with final MHE estimate...")
+    simulated_steering_final_full = simulate_with_transitions(
+        simulator, commanded_steering, measured_steering, filtered_indices, 
+        original_autonomous_mask, delay_samples, mhe.get_time_constant()
+    )
     
-    # Simulate with initial tau for comparison
-    simulated_steering_initial = simulator.simulate_trajectory(u_delayed, initial_steering=measured_steering[0], tau=args.initial_tau)
+    print("Simulating with initial tau estimate...")
+    simulated_steering_initial_full = simulate_with_transitions(
+        simulator, commanded_steering, measured_steering, filtered_indices,
+        original_autonomous_mask, delay_samples, args.initial_tau
+    )
     
-    # Calculate RMSE for both
-    rmse_final = np.sqrt(np.mean((simulated_steering_final - measured_steering)**2))
-    rmse_initial = np.sqrt(np.mean((simulated_steering_initial - measured_steering)**2))
-    print(f"Model RMSE (initial tau={args.initial_tau:.3f}): {rmse_initial:.6f} rad")
-    print(f"Model RMSE (final tau={mhe.get_time_constant():.3f}): {rmse_final:.6f} rad")
-    print(f"RMSE improvement: {((rmse_initial - rmse_final) / rmse_initial * 100):.1f}%")
+    # Calculate RMSE with transition awareness
+    print("Calculating RMSE with transition awareness...")
+    print("Initial tau RMSE by segment:")
+    rmse_initial, initial_segment_rmses = calculate_rmse_with_transitions(
+        simulated_steering_initial_full, measured_steering, filtered_indices, original_autonomous_mask
+    )
+    
+    print("Final MHE tau RMSE by segment:")
+    rmse_final, final_segment_rmses = calculate_rmse_with_transitions(
+        simulated_steering_final_full, measured_steering, filtered_indices, original_autonomous_mask
+    )
+    
+    print(f"\nModel RMSE Summary:")
+    print(f"Initial tau ({args.initial_tau:.3f}s): {rmse_initial:.6f} rad")
+    print(f"Final MHE tau ({mhe.get_time_constant():.3f}s): {rmse_final:.6f} rad")
+    if rmse_initial != float('inf') and rmse_final != float('inf'):
+        print(f"RMSE improvement: {((rmse_initial - rmse_final) / rmse_initial * 100):.1f}%")
+    
+    # Create full timeline for plotting with gaps during manual periods
+    all_timestamps_sec = (all_timestamps - all_timestamps[0]) / 1e9
+    full_time_constants = np.full(len(all_timestamps_sec), np.nan)
+    full_commanded_steering = np.full(len(all_timestamps_sec), np.nan)
+    full_measured_steering = np.full(len(all_timestamps_sec), np.nan)
+    
+    # Map all the MHE results and data back to the full timeline using the filtered indices
+    for i in range(len(time_constants)):
+        original_idx = filtered_indices[i]
+        full_time_constants[original_idx] = time_constants[i]
+        full_commanded_steering[original_idx] = commanded_steering[i]
+        full_measured_steering[original_idx] = measured_steering[i]
+    
+    # Use the full simulation results (already mapped to original timeline)
+    full_simulated_initial = simulated_steering_initial_full
+    full_simulated_final = simulated_steering_final_full
     
     # Plot results
     plt.figure(figsize=(15, 10))
     
     # Plot commanded vs measured steering
     plt.subplot(3, 1, 1)
-    plt.plot(timestamps, commanded_steering, label='Commanded Steering', alpha=0.7)
-    plt.plot(timestamps, measured_steering, label='Measured Steering', alpha=0.7)
-    plt.plot(timestamps, simulated_steering_initial, label=f'Simulated (Initial τ={args.initial_tau:.3f}s)', linestyle=':', alpha=0.8)
-    plt.plot(timestamps, simulated_steering_final, label=f'Simulated (MHE τ={mhe.get_time_constant():.3f}s)', linestyle='--', alpha=0.8)
+    
+    # Add background shading for manual periods (non-autonomous)
+    if not args.no_filter_autonomous and len(original_autonomous_mask) > 0:
+        manual_periods = ~original_autonomous_mask
+        if np.any(manual_periods):
+            # Find continuous manual periods for shading
+            manual_starts = []
+            manual_ends = []
+            in_manual = False
+            
+            for i in range(len(manual_periods)):
+                if manual_periods[i] and not in_manual:
+                    # Start of manual period
+                    manual_starts.append(all_timestamps_sec[i])
+                    in_manual = True
+                elif not manual_periods[i] and in_manual:
+                    # End of manual period
+                    manual_ends.append(all_timestamps_sec[i-1] if i > 0 else all_timestamps_sec[i])
+                    in_manual = False
+            
+            # Handle case where data ends in manual mode
+            if in_manual:
+                manual_ends.append(all_timestamps_sec[-1])
+            
+            # Add shading for manual periods
+            for start, end in zip(manual_starts, manual_ends):
+                plt.axvspan(start, end, alpha=0.2, color='red', label='Manual Control' if start == manual_starts[0] else "")
+    
+    plt.plot(all_timestamps_sec, full_commanded_steering, label='Commanded Steering', alpha=0.7)
+    plt.plot(all_timestamps_sec, full_measured_steering, label='Measured Steering', alpha=0.7)
+    plt.plot(all_timestamps_sec, full_simulated_initial, label=f'Simulated (Initial τ={args.initial_tau:.3f}s)', linestyle=':', alpha=0.8)
+    plt.plot(all_timestamps_sec, full_simulated_final, label=f'Simulated (MHE τ={mhe.get_time_constant():.3f}s)', linestyle='--', alpha=0.8)
     
     plt.xlabel('Time (s)')
     plt.ylabel('Steering Angle (rad)')
@@ -261,7 +497,13 @@ def main():
     
     # Plot estimated time constant
     plt.subplot(3, 1, 2)
-    plt.plot(timestamps, time_constants)
+    
+    # Add background shading for manual periods
+    if not args.no_filter_autonomous and len(original_autonomous_mask) > 0 and np.any(~original_autonomous_mask):
+        for start, end in zip(manual_starts, manual_ends):
+            plt.axvspan(start, end, alpha=0.2, color='red')
+    
+    plt.plot(all_timestamps_sec, full_time_constants)
     
     plt.xlabel('Time (s)')
     plt.ylabel('Time Constant (s)')
@@ -270,10 +512,26 @@ def main():
     
     # Plot error between measured and simulated
     plt.subplot(3, 1, 3)
-    error_initial = simulated_steering_initial - measured_steering
-    error_final = simulated_steering_final - measured_steering
-    plt.plot(timestamps, error_initial, label=f'Error (Initial τ={args.initial_tau:.3f}s)', alpha=0.7)
-    plt.plot(timestamps, error_final, label=f'Error (MHE τ={mhe.get_time_constant():.3f}s)', alpha=0.7)
+    
+    # Add background shading for manual periods
+    if not args.no_filter_autonomous and len(original_autonomous_mask) > 0 and np.any(~original_autonomous_mask):
+        for start, end in zip(manual_starts, manual_ends):
+            plt.axvspan(start, end, alpha=0.2, color='red')
+    
+    # Create full error arrays for plotting
+    full_error_initial = np.full(len(all_timestamps_sec), np.nan)
+    full_error_final = np.full(len(all_timestamps_sec), np.nan)
+    
+    # Calculate errors only for autonomous periods
+    for i in range(len(measured_steering)):
+        original_idx = filtered_indices[i]
+        if not np.isnan(simulated_steering_initial_full[original_idx]):
+            full_error_initial[original_idx] = simulated_steering_initial_full[original_idx] - measured_steering[i]
+        if not np.isnan(simulated_steering_final_full[original_idx]):
+            full_error_final[original_idx] = simulated_steering_final_full[original_idx] - measured_steering[i]
+    
+    plt.plot(all_timestamps_sec, full_error_initial, label=f'Error (Initial τ={args.initial_tau:.3f}s)', alpha=0.7)
+    plt.plot(all_timestamps_sec, full_error_final, label=f'Error (MHE τ={mhe.get_time_constant():.3f}s)', alpha=0.7)
     
     plt.xlabel('Time (s)')
     plt.ylabel('Error (rad)')

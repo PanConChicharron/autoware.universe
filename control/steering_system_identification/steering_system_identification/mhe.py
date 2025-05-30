@@ -136,7 +136,7 @@ class SteeringMHE:
         measurement_noise_std = 0.01   # measurement noise
         process_noise_std = 0.1       # process noise for steering
         arrival_cost_steering = 1.0   # arrival cost for steering
-        arrival_cost_tau = 1.0       # high confidence in tau estimate
+        arrival_cost_tau = 0.2      # high confidence in tau estimate
         
         # Cost matrices (correct dimensions)
         self.R = np.array([[1.0 / (measurement_noise_std**2)]])  # 1x1 for steering measurement
