@@ -3,6 +3,7 @@ from acados_template import AcadosOcp, AcadosOcpSolver, AcadosModel
 from casadi import SX, vertcat
 from scipy.linalg import block_diag
 from collections import deque
+from steering_simulator import simulate_steering_system
 
 def export_steering_mhe_model():
     """Export steering system MHE model with time constant as augmented state"""
@@ -120,21 +121,22 @@ def export_steering_mhe_solver(model, N, h, Q, Q0, R):
     return acados_solver_mhe
 
 class SteeringMHE:
-    def __init__(self, horizon=20, dt=0.1, delay_samples=3):
+    def __init__(self, horizon=20, dt=0.1, delay=0.3, initial_tau=0.2):
         self.horizon = horizon
         self.dt = dt
-        self.delay_samples = delay_samples  # Number of samples for delay (0.24s / 0.1s = 2.4 ≈ 3)
-        self.tau = 0.2  # More realistic initial time constant estimate
+        self.delay = delay  # Delay in seconds
+        self.delay_samples = int(round(delay / dt))  # Convert to samples
+        self.tau = initial_tau  # Use provided initial time constant estimate
         
         # Buffers for data with delay handling
-        self.input_buffer = deque(maxlen=horizon + delay_samples + 10)
+        self.input_buffer = deque(maxlen=horizon + self.delay_samples + 10)
         self.measurement_buffer = deque(maxlen=horizon + 10)
         
         # Noise statistics (following pendulum example conventions)
         measurement_noise_std = 0.01   # measurement noise
-        process_noise_std = 0.05       # process noise for steering
-        arrival_cost_steering = 10.0   # arrival cost for steering
-        arrival_cost_tau = 100.0       # high confidence in tau estimate
+        process_noise_std = 0.1       # process noise for steering
+        arrival_cost_steering = 1.0   # arrival cost for steering
+        arrival_cost_tau = 1.0       # high confidence in tau estimate
         
         # Cost matrices (correct dimensions)
         self.R = np.array([[1.0 / (measurement_noise_std**2)]])  # 1x1 for steering measurement
@@ -227,23 +229,24 @@ class SteeringMHE:
         
     def get_delay(self):
         """Get delay in seconds"""
-        return self.delay_samples * self.dt
+        return self.delay
         
-    def simulate_model(self, u_commands, initial_steering=0.0):
-        """Simulate the estimated model for validation"""
-        steering = initial_steering
-        results = []
-        
-        for i, u_cmd in enumerate(u_commands):
-            # Apply delay
-            if i >= self.delay_samples:
-                u_delayed = u_commands[i - self.delay_samples]
-            else:
-                u_delayed = 0.0
-                
-            # First order dynamics: d(steering)/dt = (-steering + u_delayed) / tau
-            steering_dot = (-steering + u_delayed) / self.tau
-            steering += steering_dot * self.dt
-            results.append(steering)
-            
-        return np.array(results) 
+    def simulate_model(self, u_commands, initial_steering=0.0, simulator=None):
+        """Simulate the estimated model for validation using acados ERK integration"""
+        if simulator is not None:
+            # Use provided simulator
+            return simulator.simulate_trajectory(
+                u_commands=u_commands,
+                initial_steering=initial_steering,
+                tau=self.tau,
+                time_steps=None
+            )
+        else:
+            # Fall back to convenience function
+            return simulate_steering_system(
+                u_commands=u_commands,
+                tau=self.tau,
+                delay_samples=self.delay_samples,
+                initial_steering=initial_steering,
+                dt=self.dt
+            ) 
