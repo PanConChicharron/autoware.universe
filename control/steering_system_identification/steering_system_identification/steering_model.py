@@ -3,9 +3,9 @@ from acados_template import AcadosModel
 from casadi import SX, vertcat
 
 def export_steering_model():
-    """Export steering system model for both MHE and simulation"""
+    """Export first-order steering system model for both MHE and simulation"""
     
-    model_name = 'steering_model'
+    model_name = 'first_order_steering_model'
     
     # States: [steering_angle, time_constant]
     steering = SX.sym('steering')
@@ -42,9 +42,9 @@ def export_steering_model():
     return model
 
 def export_steering_mhe_model():
-    """Export steering system MHE model with process noise"""
+    """Export first-order steering system MHE model with process noise"""
     
-    model_name = 'steering_mhe_model'
+    model_name = 'first_order_steering_mhe_model'
     
     # States: [steering_angle, time_constant]
     steering = SX.sym('steering')
