@@ -180,13 +180,8 @@ def simulate_with_transitions(simulator, commanded_steering, measured_steering, 
     # Create full simulation result array
     full_simulated = np.full(len(original_autonomous_mask), np.nan)
     
-    # Apply delay to commands
-    u_delayed = np.zeros_like(commanded_steering)
-    for i in range(len(commanded_steering)):
-        if i >= delay_samples:
-            u_delayed[i] = commanded_steering[i - delay_samples]
-        else:
-            u_delayed[i] = 0.0
+    # Note: delay handling is now done inside simulate_trajectory_with_varying_tau
+    # No need to manually apply delay to commands here
     
     # Find continuous autonomous segments
     autonomous_segments = []
@@ -223,8 +218,8 @@ def simulate_with_transitions(simulator, commanded_steering, measured_steering, 
         if filtered_start is None or filtered_end is None:
             continue
             
-        # Get the segment data
-        segment_commands = u_delayed[filtered_start:filtered_end+1]
+        # Get the segment data (use original commanded steering, not delayed)
+        segment_commands = commanded_steering[filtered_start:filtered_end+1]
         segment_tau_values = tau_array[filtered_start:filtered_end+1]
         
         # Use measured steering at start of segment as initial condition
@@ -232,9 +227,9 @@ def simulate_with_transitions(simulator, commanded_steering, measured_steering, 
         
         print(f"Simulating segment {seg_start}-{seg_end} (filtered {filtered_start}-{filtered_end}) with initial steering {initial_steering:.4f}")
         
-        # Simulate this segment with time-varying tau
+        # Simulate this segment with time-varying tau and proper delay handling
         segment_result = simulate_trajectory_with_varying_tau(
-            simulator, segment_commands, segment_tau_values, initial_steering
+            simulator, segment_commands, segment_tau_values, initial_steering, delay_samples
         )
         
         # Map results back to full array
@@ -245,8 +240,8 @@ def simulate_with_transitions(simulator, commanded_steering, measured_steering, 
     
     return full_simulated
 
-def simulate_trajectory_with_varying_tau(simulator, u_commands, tau_values, initial_steering=0.0):
-    """Simulate trajectory with time-varying tau values"""
+def simulate_trajectory_with_varying_tau(simulator, u_commands, tau_values, initial_steering=0.0, delay_samples=0):
+    """Simulate trajectory with time-varying tau values and proper delay handling"""
     
     # Initialize state
     state = np.array([initial_steering, tau_values[0]])
@@ -256,8 +251,17 @@ def simulate_trajectory_with_varying_tau(simulator, u_commands, tau_values, init
         # Update tau in the state for this time step
         state[1] = tau_values[i]
         
-        # Simulate one step
-        state = simulator.simulate_step(state, u_cmd)
+        # Apply delay: use command from delay_samples steps ago
+        if i >= delay_samples:
+            u_delayed = u_commands[i - delay_samples]
+        else:
+            # During delay period, no input has reached the system yet
+            # The system should maintain its current state (no change)
+            results.append(state[0])  # Keep the same steering angle
+            continue
+        
+        # Simulate one step with the delayed input
+        state = simulator.simulate_step(state, u_delayed)
         results.append(state[0])  # Store steering angle
         
     return np.array(results)

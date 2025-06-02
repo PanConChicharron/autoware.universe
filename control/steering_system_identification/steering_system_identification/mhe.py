@@ -85,8 +85,8 @@ class SteeringMHE:
         ocp_mhe.cost.yref_0 = np.zeros((ny_0,))
         
         # Bounds on states to ensure realistic values
-        ocp_mhe.constraints.lbx = np.array([-np.pi, 0.05])  # steering, tau
-        ocp_mhe.constraints.ubx = np.array([np.pi, 1.0])    # steering, tau (more realistic upper bound)
+        ocp_mhe.constraints.lbx = np.array([-np.pi, 5e-2])  # steering, tau
+        ocp_mhe.constraints.ubx = np.array([np.pi, 5.0])    # steering, tau (more realistic upper bound)
         ocp_mhe.constraints.idxbx = np.array([0, 1])
         
         # Bounds on process noise
