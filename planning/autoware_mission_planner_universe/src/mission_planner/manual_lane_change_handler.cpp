@@ -14,20 +14,18 @@
 
 #include "manual_lane_change_handler.hpp"
 
-#include "mission_planner.hpp"
+#include <autoware_planning_msgs/msg/lanelet_route.hpp>
 
 #include <string>
 
 namespace autoware::mission_planner_universe
 {
 
-LaneChangeRequestResult ManualLaneChangeHandler::process_lane_change_request(
-  const int64_t ego_lanelet_id, const SetPreferredLane::Request::SharedPtr req)
-{
-  const DIRECTION override_direction = req->lane_change_direction == 0   ? DIRECTION::MANUAL_LEFT
-                                       : req->lane_change_direction == 1 ? DIRECTION::MANUAL_RIGHT
-                                                                         : DIRECTION::AUTO;
+using autoware_planning_msgs::msg::LaneletPrimitive;
 
+LaneChangeRequestResult ManualLaneChangeHandler::process_lane_change_request(
+  const int64_t ego_lanelet_id, const DIRECTION override_direction)
+{
   if (override_direction == DIRECTION::AUTO) {
     LaneletRoute route;
     // Use back-up
@@ -44,7 +42,7 @@ LaneChangeRequestResult ManualLaneChangeHandler::process_lane_change_request(
     return {route, true, "Manual lane selection to AUTO is commanded and executed successfully."};
   }
 
-  if (!*current_route_) {
+  if (!current_route_) {
     return {
       LaneletRoute(), false,
       "Manual lane selection to " +
@@ -54,11 +52,11 @@ LaneChangeRequestResult ManualLaneChangeHandler::process_lane_change_request(
         std::string(" is commanded but canceled due to no current route available.")};
   }
 
-  LaneletRoute route = **current_route_;
+  LaneletRoute route = *current_route_;
 
   if (!original_route_) {
     // Save the original route if not already saved
-    original_route_ = *current_route_;
+    original_route_ = current_route_;
   }
 
   const auto final_iter = std::prev(route.segments.end());
@@ -178,6 +176,15 @@ LaneChangeRequestResult ManualLaneChangeHandler::process_lane_change_request(
        : override_direction == DIRECTION::MANUAL_RIGHT ? std::string("right")
                                                        : std::string("unknown")) +
       std::string(" is commanded and executed successfully.")};
+}
+
+void ManualLaneChangeHandler::publish_processing_time(
+  autoware_utils::StopWatch<std::chrono::milliseconds> stop_watch)
+{
+  autoware_internal_debug_msgs::msg::Float64Stamped processing_time_msg;
+  processing_time_msg.stamp = get_clock()->now();
+  processing_time_msg.data = stop_watch.toc();
+  pub_processing_time_->publish(processing_time_msg);
 }
 
 }  // namespace autoware::mission_planner_universe

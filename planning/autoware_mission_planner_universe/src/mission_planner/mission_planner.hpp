@@ -37,6 +37,7 @@
 #include <autoware_planning_msgs/srv/set_waypoint_route.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <tier4_planning_msgs/msg/reroute_availability.hpp>
+#include <tier4_planning_msgs/srv/manual_lane_change_request.hpp>
 #include <tier4_planning_msgs/srv/set_preferred_lane.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 
@@ -65,15 +66,10 @@ using geometry_msgs::msg::PoseStamped;
 using nav_msgs::msg::Odometry;
 using std_msgs::msg::Header;
 using tier4_planning_msgs::msg::RerouteAvailability;
+using tier4_planning_msgs::srv::ManualLaneChangeRequest;
 using tier4_planning_msgs::srv::SetPreferredLane;
 using unique_identifier_msgs::msg::UUID;
 using visualization_msgs::msg::MarkerArray;
-
-enum class DIRECTION {
-  MANUAL_LEFT,
-  MANUAL_RIGHT,
-  AUTO,
-};
 
 class MissionPlanner : public rclcpp::Node
 {
@@ -106,6 +102,7 @@ private:
 
   rclcpp::Subscription<LaneletMapBin>::SharedPtr sub_vector_map_;
   rclcpp::Publisher<MarkerArray>::SharedPtr pub_marker_;
+  rclcpp::Client<tier4_planning_msgs::srv::ManualLaneChangeRequest>::SharedPtr manual_lane_change_client_;
   Odometry::ConstSharedPtr odometry_;
   OperationModeState::ConstSharedPtr operation_mode_state_;
   LaneletMapBin::ConstSharedPtr map_ptr_;
@@ -114,10 +111,7 @@ private:
   std::optional<LaneletRoute::ConstSharedPtr> original_route_;
   LaneletRoute::ConstSharedPtr current_route_;
 
-  ManualLaneChangeHandler manual_lane_change_handler_{
-    &current_route_, [&](const int64_t id) {
-      return planner_->getRouteHandler().getLaneletMapPtr()->laneletLayer.get(id);
-    }};
+  // ManualLaneChangeHandler manual_lane_change_handler_;
 
   lanelet::LaneletMapPtr lanelet_map_ptr_{nullptr};
 

@@ -37,7 +37,7 @@ ManualLaneSelection::ManualLaneSelection(QWidget * parent) : rviz_common::Panel(
   node_ = std::make_shared<rclcpp::Node>("tier4_manual_lane_change_rviz_plugin");
 
   // Create the service client
-  client_ = node_->create_client<SetPreferredLane>(
+  set_preferred_lane_client_ = node_->create_client<SetPreferredLane>(
     "/planning/mission_planning/mission_planner/set_preferred_lane");
 
   // Connect button signals
@@ -53,16 +53,16 @@ ManualLaneSelection::ManualLaneSelection(QWidget * parent) : rviz_common::Panel(
 
 void ManualLaneSelection::send_lane_change_request(uint8_t direction)
 {
-  if (!client_->wait_for_service(std::chrono::seconds(1))) {
+  if (!set_preferred_lane_client_->wait_for_service(std::chrono::seconds(1))) {
     qWarning("ManualLaneSelection: Service not available");
     return;
   }
 
   auto request = std::make_shared<SetPreferredLane::Request>();
-  request->lane_change_direction = direction;
+  request->code = direction;
 
   // Async call
-  auto future = client_->async_send_request(
+  auto future = set_preferred_lane_client_->async_send_request(
     request, [direction](rclcpp::Client<SetPreferredLane>::SharedFuture response) {
       const auto & res = response.get()->status;
       qInfo(

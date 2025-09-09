@@ -108,6 +108,9 @@ MissionPlanner::MissionPlanner(const rclcpp::NodeOptions & options)
   pub_route_ = create_publisher<LaneletRoute>("~/route", durable_qos);
   pub_state_ = create_publisher<RouteState>("~/state", durable_qos);
 
+  manual_lane_change_client_ = this->create_client<ManualLaneChangeRequest>(
+    "/planning/mission_planning/manual_lane_change_handler/manual_lane_change_request");
+
   // Route state will be published when the node gets ready for route api after initialization,
   // otherwise the mission planner rejects the request for the API.
   using namespace std::literals::chrono_literals;
@@ -324,10 +327,6 @@ void MissionPlanner::set_preferred_lane(
 
   change_state(is_reroute ? RouteState::REROUTING : RouteState::ROUTING);
 
-  const DIRECTION override_direction = req->lane_change_direction == 0   ? DIRECTION::MANUAL_LEFT
-                                       : req->lane_change_direction == 1 ? DIRECTION::MANUAL_RIGHT
-                                                                         : DIRECTION::AUTO;
-
   lanelet::ConstLanelet closest_lanelet;
   const bool found_closest_lane = planner_->getRouteHandler().getClosestLaneletWithinRoute(
     odometry_->pose.pose, &closest_lanelet);
@@ -340,13 +339,28 @@ void MissionPlanner::set_preferred_lane(
       ResponseCode::ERROR_PLANNER_FAILED, "Failed to find closest lanelet.");
   }
 
-  const LaneChangeRequestResult lane_change_request_result =
-    manual_lane_change_handler_.process_lane_change_request(closest_lanelet.id(), req);
-  auto route = lane_change_request_result.route;
+  auto request = std::make_shared<ManualLaneChangeRequest::Request>();
+  request->code = req->lane_change_direction;
+  request->current_route = *current_route_;
+  request->lane_id = closest_lanelet.id();
 
-  res->status.message = lane_change_request_result.message;
+  auto future = manual_lane_change_client_->async_send_request(request);
+  auto ret = rclcpp::spin_until_future_complete(this->get_node_base_interface(), future);
 
-  if (!lane_change_request_result.success) {
+  if (ret != rclcpp::FutureReturnCode::SUCCESS) {
+    RCLCPP_ERROR(get_logger(), "ManualLaneChangeRequest service call failed");
+    res->status.success = false;
+    cancel_route();
+    change_state(is_reroute ? RouteState::SET : RouteState::UNSET);
+    return;
+  }
+  auto manual_lane_change_res = future.get();
+
+  res->status.message = manual_lane_change_res->status.message;
+
+  auto route = std::move(manual_lane_change_res->new_route);
+
+  if (!manual_lane_change_res->status.success) {
     res->status.success = false;
     cancel_route();
     change_state(is_reroute ? RouteState::SET : RouteState::UNSET);
@@ -387,6 +401,10 @@ void MissionPlanner::set_preferred_lane(
   boost::uuids::random_generator gen;
   boost::uuids::uuid uuid = gen();
   std::copy(uuid.begin(), uuid.end(), route.uuid.uuid.begin());
+
+  const DIRECTION override_direction = req->lane_change_direction == 0   ? DIRECTION::MANUAL_LEFT
+                                       : req->lane_change_direction == 1 ? DIRECTION::MANUAL_RIGHT
+                                                                         : DIRECTION::AUTO;
 
   change_route(route, override_direction != DIRECTION::AUTO);
   change_state(RouteState::SET);
@@ -516,6 +534,11 @@ void MissionPlanner::on_set_lanelet_route(
       sortPrimitivesLeftToRight(route_handler, segment.preferred_primitive, segment.primitives);
   }
 
+  // Reset manual lane change handler
+  auto request = std::make_shared<ManualLaneChangeRequest::Request>();
+  request->code = 3;  // RESET
+  auto future = manual_lane_change_client_->async_send_request(request);
+
   change_route(route);
   change_state(RouteState::SET);
   res->status.success = true;
@@ -577,7 +600,9 @@ void MissionPlanner::on_set_waypoint_route(
   }
 
   // Reset manual lane change handler
-  manual_lane_change_handler_.reset();
+  auto request = std::make_shared<ManualLaneChangeRequest::Request>();
+  request->code = 3;  // RESET
+  auto future = manual_lane_change_client_->async_send_request(request);
 
   change_route(route);
   change_state(RouteState::SET);

@@ -39,7 +39,7 @@ private:
   QPushButton * auto_button_;
   QPushButton * right_button_;
   rclcpp::Node::SharedPtr node_;
-  rclcpp::Client<tier4_planning_msgs::srv::SetPreferredLane>::SharedPtr client_;
+  rclcpp::Client<tier4_planning_msgs::srv::SetPreferredLane>::SharedPtr set_preferred_lane_client_;
   QTimer * timer_;
 };
 

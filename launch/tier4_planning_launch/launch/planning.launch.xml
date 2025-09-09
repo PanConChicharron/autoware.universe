@@ -24,6 +24,8 @@
       <include file="$(find-pkg-share tier4_planning_launch)/launch/mission_planning/mission_planning.launch.xml">
         <arg name="mission_planner_param_path" value="$(var mission_planner_param_path)"/>
       </include>
+
+      <include file="$(find-pkg-share autoware_mission_planner_universe)/launch/manual_lane_change_handler.launch.xml"/>
     </group>
 
     <!-- scenario planning module -->
