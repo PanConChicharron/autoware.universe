@@ -18,11 +18,11 @@
 #include "service_utils.hpp"
 
 #include <autoware/mission_planner_universe/mission_planner_plugin.hpp>
-#include <autoware_internal_debug_msgs/msg/float64_stamped.hpp>
 #include <autoware_lanelet2_extension/utility/query.hpp>
 #include <pluginlib/class_loader.hpp>
 #include <rclcpp/rclcpp.hpp>
 
+#include <autoware_internal_debug_msgs/msg/float64_stamped.hpp>
 #include <autoware_planning_msgs/msg/lanelet_route.hpp>
 #include <tier4_planning_msgs/srv/manual_lane_change_request.hpp>
 
@@ -64,10 +64,12 @@ public:
 
     srv_manual_lane_change_request_ = create_service<ManualLaneChangeRequest>(
       "~/manual_lane_change_request",
-      service_utils::handle_exception(&ManualLaneChangeHandler::on_manual_lane_change_request, this));
+      service_utils::handle_exception(
+        &ManualLaneChangeHandler::on_manual_lane_change_request, this));
 
-    pub_processing_time_ = this->create_publisher<autoware_internal_debug_msgs::msg::Float64Stamped>(
-    "~/debug/processing_time_ms", 1);
+    pub_processing_time_ =
+      this->create_publisher<autoware_internal_debug_msgs::msg::Float64Stamped>(
+        "~/debug/processing_time_ms", 1);
   }
 
   void on_manual_lane_change_request(
@@ -82,7 +84,8 @@ public:
       return;
     }
 
-    current_route_ = std::make_shared<const autoware_planning_msgs::msg::LaneletRoute>(req->current_route);
+    current_route_ =
+      std::make_shared<const autoware_planning_msgs::msg::LaneletRoute>(req->current_route);
     const DIRECTION override_direction = req->code == 0   ? DIRECTION::MANUAL_LEFT
                                          : req->code == 1 ? DIRECTION::MANUAL_RIGHT
                                                           : DIRECTION::AUTO;
@@ -100,7 +103,8 @@ public:
   void publish_processing_time(autoware_utils::StopWatch<std::chrono::milliseconds> stop_watch);
 
 private:
-  pluginlib::ClassLoader<PlannerPlugin> plugin_loader_{"autoware_mission_planner_universe", "autoware::mission_planner_universe::PlannerPlugin"};
+  pluginlib::ClassLoader<PlannerPlugin> plugin_loader_{
+    "autoware_mission_planner_universe", "autoware::mission_planner_universe::PlannerPlugin"};
   std::optional<LaneletRoute::ConstSharedPtr> original_route_{std::nullopt};
   LaneletRoute::ConstSharedPtr current_route_{nullptr};
   std::function<lanelet::ConstLanelet(const int64_t)> get_lanelet_by_id_;

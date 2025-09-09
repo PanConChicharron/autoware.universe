@@ -102,7 +102,8 @@ private:
 
   rclcpp::Subscription<LaneletMapBin>::SharedPtr sub_vector_map_;
   rclcpp::Publisher<MarkerArray>::SharedPtr pub_marker_;
-  rclcpp::Client<tier4_planning_msgs::srv::ManualLaneChangeRequest>::SharedPtr manual_lane_change_client_;
+  rclcpp::Client<tier4_planning_msgs::srv::ManualLaneChangeRequest>::SharedPtr
+    manual_lane_change_client_;
   Odometry::ConstSharedPtr odometry_;
   OperationModeState::ConstSharedPtr operation_mode_state_;
   LaneletMapBin::ConstSharedPtr map_ptr_;
