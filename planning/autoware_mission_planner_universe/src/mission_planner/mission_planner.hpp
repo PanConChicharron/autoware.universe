@@ -17,6 +17,7 @@
 
 #include "arrival_checker.hpp"
 #include "autoware_utils/ros/polling_subscriber.hpp"
+#include <nav_msgs/msg/odometry.hpp>
 #include "manual_lane_change_handler.hpp"
 
 #include <autoware/mission_planner_universe/mission_planner_plugin.hpp>
@@ -114,10 +115,10 @@ private:
   std::optional<LaneletRoute::ConstSharedPtr> original_route_;
   LaneletRoute::ConstSharedPtr current_route_;
 
-  ManualLaneChangeHandler manual_lane_change_handler_{
-    &current_route_, [&](const int64_t id) {
-      return planner_->getRouteHandler().getLaneletMapPtr()->laneletLayer.get(id);
-    }};
+  // ManualLaneChangeHandler manual_lane_change_handler_{
+  //   &current_route_, [&](const int64_t id) {
+  //     return planner_->getRouteHandler().getLaneletMapPtr()->laneletLayer.get(id);
+  //   }};
 
   lanelet::LaneletMapPtr lanelet_map_ptr_{nullptr};
 
@@ -145,7 +146,7 @@ private:
 
   void change_state(RouteState::_state_type state);
   void change_route();
-  void change_route(const LaneletRoute & route, bool emphasise_goal_lanes = false);
+  void change_route(const LaneletRoute & route, bool emphasise_goal_lanes = true);
   void cancel_route();
   LaneletRoute create_route(const SetLaneletRoute::Request & req);
   LaneletRoute create_route(const SetWaypointRoute::Request & req);
