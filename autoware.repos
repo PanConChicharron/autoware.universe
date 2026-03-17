@@ -11,8 +11,8 @@ repositories:
     labels: [main, common]
     type: git
     url: https://github.com/tier4/autoware_universe.git
-    branch: awf-latest
-    version: awf-latest
+    branch: arjun.ram/T4DEV_9960_build_update_pilot_auto
+    version: arjun.ram/T4DEV_9960_build_update_pilot_auto
     base: true
   autoware/autoware_cmake:
     labels: [main, common]
