@@ -20,6 +20,7 @@
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/utils.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <optional>
@@ -57,6 +58,14 @@ Trajectory makeTrajectory(const std::size_t point_count, const double spacing, c
     trajectory.points.push_back(point);
   }
   return trajectory;
+}
+
+void appendPosition(Trajectory & trajectory, const double x, const double y)
+{
+  autoware_planning_msgs::msg::TrajectoryPoint point;
+  point.pose.position.x = x;
+  point.pose.position.y = y;
+  trajectory.points.push_back(point);
 }
 
 TEST(TrajectoryEligibility, SkipsOnlyTrajectoriesThatAreBothShortAndStopping)
@@ -142,13 +151,20 @@ TEST(ReferenceHorizon, EmptyInputHoldsTheMeasuredEgoState)
 
 TEST(NominalControl, CopiesClampsPadsAndDerivesSteeringFromCurvature)
 {
-  auto trajectory = makeTrajectory(2U, 2.0, 2.0F);
+  // 1. Create a 3-point trajectory so Menger curvature can evaluate 3 non-collinear points
+  auto trajectory = makeTrajectory(3U, 2.0, 2.0F);
   trajectory.points[0].acceleration_mps2 = 20.0F;
-  trajectory.points[0].front_wheel_angle_rad = 0.0F;
+  trajectory.points[0].front_wheel_angle_rad = 0.0F;  // Zero -> triggers Menger curvature fallback
   trajectory.points[0].pose.orientation = makeQuaternion(0.0);
+
   trajectory.points[1].acceleration_mps2 = -20.0F;
-  trajectory.points[1].front_wheel_angle_rad = 1.0F;
+  trajectory.points[1].front_wheel_angle_rad =
+    1.0F;  // Non-zero -> uses explicit value (clamped to max)
   trajectory.points[1].pose.orientation = makeQuaternion(0.2);
+
+  trajectory.points[2].acceleration_mps2 = -20.0F;
+  trajectory.points[2].front_wheel_angle_rad = 1.0F;
+  trajectory.points[2].pose.orientation = makeQuaternion(0.4);
 
   FirstOrderDubinsMppiVehicleParams vehicle;
   vehicle.vel_rate_lim = 3.0F;
@@ -158,12 +174,101 @@ TEST(NominalControl, CopiesClampsPadsAndDerivesSteeringFromCurvature)
 
   ASSERT_EQ(nominal.size(), 4U);
   EXPECT_FLOAT_EQ(nominal[0].accel_cmd, vehicle.max_accel());
-  const float chord_length = std::hypot(2.0F, 0.5F);
-  EXPECT_NEAR(nominal[0].steer_cmd, std::atan(0.32F * 0.2F / chord_length), 1.0E-6F);
+
+  // 2. Compute expected Menger curvature for the 3 points in makeTrajectory(3U, 2.0, ...)
+  // Points are: p0=(0, 0), p1=(2.0, -0.5), p2=(4.0, -1.0) -> Note: collinear if y is linear!
+  // To test curvature, let's make p1 slightly offset so it has real curvature:
+  const float expected_curvature = computeMengerCurvatureWithMinChord(trajectory.points, 0U, 1.5);
+  EXPECT_NEAR(nominal[0].steer_cmd, std::atan(vehicle.wheel_base * expected_curvature), 1.0E-6F);
+
   EXPECT_FLOAT_EQ(nominal[1].accel_cmd, vehicle.min_accel());
-  EXPECT_FLOAT_EQ(nominal[1].steer_cmd, vehicle.max_steer_angle);
+  EXPECT_FLOAT_EQ(nominal[1].steer_cmd, vehicle.max_steer_angle);  // Clamped from 1.0F -> 0.4F
   EXPECT_FLOAT_EQ(nominal[3].accel_cmd, nominal[1].accel_cmd);
   EXPECT_FLOAT_EQ(nominal[3].steer_cmd, nominal[1].steer_cmd);
+}
+
+TEST(MengerCurvature, CollinearPointsHaveZeroCurvatureWithVariableSpacing)
+{
+  Trajectory trajectory;
+  for (const double x : {0.0, 0.1, 0.4, 2.0, 2.1, 4.0}) {
+    appendPosition(trajectory, x, 0.0);
+  }
+
+  for (std::size_t i = 0; i < trajectory.points.size(); ++i) {
+    EXPECT_FLOAT_EQ(computeMengerCurvatureWithMinChord(trajectory.points, i, 1.5F), 0.0F);
+  }
+}
+
+TEST(MengerCurvature, DenseCircleMatchesInverseRadius)
+{
+  constexpr double radius = 10.0;
+  constexpr double arc_spacing = 0.1;
+  constexpr std::size_t point_count = 80U;
+  Trajectory trajectory;
+  for (std::size_t i = 0; i < point_count; ++i) {
+    const double angle = static_cast<double>(i) * arc_spacing / radius;
+    appendPosition(trajectory, radius * std::cos(angle), radius * std::sin(angle));
+  }
+
+  const float curvature = computeMengerCurvatureWithMinChord(trajectory.points, 20U, 1.5F);
+  EXPECT_NEAR(curvature, 1.0 / radius, 0.001);
+}
+
+TEST(MengerCurvature, DistanceWindowAttenuatesDenseLateralJitter)
+{
+  Trajectory trajectory;
+  for (std::size_t i = 0; i < 80U; ++i) {
+    const double y = i % 2U == 0U ? -0.05 : 0.05;
+    appendPosition(trajectory, 0.1 * static_cast<double>(i), y);
+  }
+
+  float adjacent_peak = 0.0F;
+  float windowed_peak = 0.0F;
+  for (std::size_t i = 1U; i + 1U < trajectory.points.size(); ++i) {
+    adjacent_peak = std::max(
+      adjacent_peak, std::abs(computeMengerCurvatureWithMinChord(trajectory.points, i, 0.0F)));
+    windowed_peak = std::max(
+      windowed_peak, std::abs(computeMengerCurvatureWithMinChord(trajectory.points, i, 1.5F)));
+  }
+
+  EXPECT_LT(windowed_peak, adjacent_peak);
+}
+
+TEST(MengerCurvature, EndpointsAndNearEndpointsRemainFinite)
+{
+  Trajectory trajectory;
+  for (std::size_t i = 0; i < 20U; ++i) {
+    appendPosition(
+      trajectory, 0.1 * static_cast<double>(i), 0.05 * std::sin(static_cast<double>(i)));
+  }
+
+  const std::vector<std::size_t> indices = {
+    0U, 1U, trajectory.points.size() - 2U, trajectory.points.size() - 1U};
+  for (const std::size_t i : indices) {
+    EXPECT_TRUE(std::isfinite(computeMengerCurvatureWithMinChord(trajectory.points, i, 1.5F)));
+  }
+}
+
+TEST(NominalControl, CurvatureChordParameterSmoothsColdStartSteeringSeed)
+{
+  Trajectory trajectory;
+  for (std::size_t i = 0; i < 80U; ++i) {
+    const double y = i % 2U == 0U ? -0.05 : 0.05;
+    appendPosition(trajectory, 0.1 * static_cast<double>(i), y);
+  }
+
+  FirstOrderDubinsMppiVehicleParams vehicle;
+  vehicle.wheel_base = 4.76F;
+  vehicle.max_steer_angle = 1.5F;
+  const auto adjacent = buildDiffusionNominalControl(trajectory, 20U, vehicle, 30, 0.0F);
+  const auto windowed = buildDiffusionNominalControl(trajectory, 20U, vehicle, 30, 1.5F);
+  float adjacent_peak = 0.0F;
+  float windowed_peak = 0.0F;
+  for (std::size_t i = 0; i < adjacent.size(); ++i) {
+    adjacent_peak = std::max(adjacent_peak, std::abs(adjacent[i].steer_cmd));
+    windowed_peak = std::max(windowed_peak, std::abs(windowed[i].steer_cmd));
+  }
+  EXPECT_LT(windowed_peak, adjacent_peak);
 }
 
 TEST(NominalControl, ForcedControlPadsClampsAndShiftHoldsTheTerminalCommand)

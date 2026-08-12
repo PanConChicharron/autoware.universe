@@ -92,7 +92,8 @@ InitialState makeInitialState(
 }
 
 std::vector<ReferenceSample> buildReferenceHorizon(
-  const Trajectory & trajectory, const InitialState & ego, const int horizon, const float dt, const size_t start_idx)
+  const Trajectory & trajectory, const InitialState & ego, const int horizon, const float dt,
+  const size_t start_idx)
 {
   const size_t sample_count = std::max(0, horizon);
   std::vector<ReferenceSample> reference(static_cast<std::size_t>(sample_count));
@@ -118,9 +119,64 @@ std::vector<ReferenceSample> buildReferenceHorizon(
   return reference;
 }
 
+float computeMengerCurvatureWithMinChord(
+  const std::vector<autoware_planning_msgs::msg::TrajectoryPoint> & points,
+  const std::size_t target_idx, const float min_chord_length_m) noexcept
+{
+  constexpr double kSideLengthEpsilon = 1.0E-4;
+  constexpr double kMinimumDenominator = 1.0E-8;
+  if (points.size() < 3U || target_idx >= points.size()) {
+    return 0.0F;
+  }
+
+  const double minimum_chord = std::max(0.0, static_cast<double>(min_chord_length_m));
+  const auto & center = points[target_idx].pose.position;
+  const auto distance_from_center = [&center](const auto & point) {
+    return std::hypot(point.pose.position.x - center.x, point.pose.position.y - center.y);
+  };
+
+  std::size_t backward_idx = 0U;
+  for (std::size_t candidate = target_idx; candidate > 0U; --candidate) {
+    const std::size_t index = candidate - 1U;
+    if (distance_from_center(points[index]) >= minimum_chord) {
+      backward_idx = index;
+      break;
+    }
+  }
+
+  std::size_t forward_idx = points.size() - 1U;
+  for (std::size_t index = target_idx + 1U; index < points.size(); ++index) {
+    if (distance_from_center(points[index]) >= minimum_chord) {
+      forward_idx = index;
+      break;
+    }
+  }
+
+  if (backward_idx == target_idx || forward_idx == target_idx) {
+    return 0.0F;
+  }
+
+  const auto & first = points[backward_idx].pose.position;
+  const auto & last = points[forward_idx].pose.position;
+  const double first_to_center = std::hypot(center.x - first.x, center.y - first.y);
+  const double center_to_last = std::hypot(last.x - center.x, last.y - center.y);
+  const double first_to_last = std::hypot(last.x - first.x, last.y - first.y);
+  const double denominator = first_to_center * center_to_last * first_to_last;
+  if (
+    first_to_center < kSideLengthEpsilon || center_to_last < kSideLengthEpsilon ||
+    first_to_last < kSideLengthEpsilon || denominator < kMinimumDenominator) {
+    return 0.0F;
+  }
+
+  const double cross =
+    (center.x - first.x) * (last.y - first.y) - (center.y - first.y) * (last.x - first.x);
+  return static_cast<float>(2.0 * cross / denominator);
+}
+
 std::vector<FirstOrderDubinsMppiControl> buildDiffusionNominalControl(
   const Trajectory & reference, const std::size_t start_idx,
-  const FirstOrderDubinsMppiVehicleParams & vehicle_params, const int horizon)
+  const FirstOrderDubinsMppiVehicleParams & vehicle_params, const int horizon,
+  const float min_chord_length_m)
 {
   const int control_count = std::max(0, horizon);
   std::vector<FirstOrderDubinsMppiControl> nominal(static_cast<std::size_t>(control_count));
@@ -135,29 +191,12 @@ std::vector<FirstOrderDubinsMppiControl> buildDiffusionNominalControl(
     auto & control = nominal[static_cast<std::size_t>(t)];
     control.accel_cmd =
       std::clamp(point.acceleration_mps2, vehicle_params.min_accel(), vehicle_params.max_accel());
-
     float steering = point.front_wheel_angle_rad;
-    if (std::abs(steering) <= 1.0E-6F && index + 1U < reference.points.size()) {
-      const float minimum_chord_length = std::max(1.5F, vehicle_params.wheel_base * 0.5F);
-      std::size_t lookahead_index = index + 1U;
-      float chord_length = 0.0F;
-      while (lookahead_index < reference.points.size()) {
-        const auto & next = reference.points[lookahead_index];
-        const float dx = static_cast<float>(next.pose.position.x - point.pose.position.x);
-        const float dy = static_cast<float>(next.pose.position.y - point.pose.position.y);
-        chord_length = std::hypot(dx, dy);
-        if (chord_length >= minimum_chord_length) {
-          break;
-        }
-        ++lookahead_index;
-      }
-
-      if (chord_length >= minimum_chord_length) {
-        const auto & next = reference.points[lookahead_index];
-        const float yaw0 = static_cast<float>(tf2::getYaw(point.pose.orientation));
-        const float yaw1 = static_cast<float>(tf2::getYaw(next.pose.orientation));
-        const float yaw_difference = std::atan2(std::sin(yaw1 - yaw0), std::cos(yaw1 - yaw0));
-        steering = std::atan(vehicle_params.wheel_base * yaw_difference / chord_length);
+    if (std::abs(steering) <= 1.0E-6F) {
+      const float curvature =
+        computeMengerCurvatureWithMinChord(reference.points, index, min_chord_length_m);
+      if (std::isfinite(curvature)) {
+        steering = std::atan(vehicle_params.wheel_base * curvature);
       }
     }
     control.steer_cmd =
