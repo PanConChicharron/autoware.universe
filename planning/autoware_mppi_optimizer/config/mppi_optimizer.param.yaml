@@ -3,7 +3,7 @@
     # Vehicle actuation dynamics are loaded from $(vehicle_model)_description/config/simulator_model.param.yaml
 
     # FirstOrderDubinsBicycleCostParams (see first_order_dubins_bicycle_cost.cuh)
-    lambda: 1000.0
+    lambda: 100.0
     desired_speed: 2.5
     speed_coeff: 300.0
     track_coeff: 1200.0
@@ -20,7 +20,7 @@
     crash_coeff: 100000.0
     boundary_threshold: 0.8
     lateral_acceleration_coeff: 100.0
-    lateral_jerk_coeff: 200.0
+    lateral_jerk_coeff: 100000.0
     longitudinal_jerk_coeff: 100.0
     accel_cmd_coeff: 50.0
     steer_cmd_coeff: 250.0
