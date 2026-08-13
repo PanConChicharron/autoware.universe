@@ -97,20 +97,25 @@ std::vector<ReferenceSample> buildReferenceHorizon(
 {
   const size_t sample_count = std::max(0, horizon);
   std::vector<ReferenceSample> reference(static_cast<std::size_t>(sample_count));
-  for (auto k = 0U; k < sample_count; ++k) {
-    const size_t idx = std::min(k + start_idx, sample_count - 1);
-    auto & sample = reference[static_cast<std::size_t>(idx)];
-    sample.time = static_cast<float>(k + 1) * dt;
-    if (trajectory.points.empty()) {
-      sample.x = ego.x;
-      sample.y = ego.y;
-      sample.yaw = ego.yaw;
-      sample.velocity = ego.velocity;
-      continue;
-    }
 
-    const std::size_t index = std::min(static_cast<std::size_t>(k), trajectory.points.size() - 1U);
-    const auto & point = trajectory.points[index];
+  if (trajectory.points.empty()) {
+    for (auto & reference_sample : reference) {
+      reference_sample.x = ego.x;
+      reference_sample.y = ego.y;
+      reference_sample.yaw = ego.yaw;
+      reference_sample.velocity = ego.velocity;
+    }
+    return reference;
+  }
+
+  for (std::size_t k = 0; k < sample_count; ++k) {
+    auto & sample = reference[k];
+    sample.time = static_cast<float>(k + 1U) * dt;
+
+    const std::size_t source_idx =
+      std::min(k + start_idx, trajectory.points.size() - 1U);
+    const auto & point = trajectory.points[source_idx];
+
     sample.x = static_cast<float>(point.pose.position.x);
     sample.y = static_cast<float>(point.pose.position.y);
     sample.yaw = static_cast<float>(tf2::getYaw(point.pose.orientation));
