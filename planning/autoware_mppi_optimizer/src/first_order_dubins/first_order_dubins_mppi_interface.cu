@@ -121,29 +121,29 @@ void scaleCostBreakdown(CostBreakdown & breakdown, const float scale)
 
 CostBreakdown reconstructSelectedTrajectoryCost(
   const COST & cost, DYN & model, const Mppi::state_trajectory & states,
-  const Mppi::control_trajectory & controls, const DYN::state_array & final_state)
+  const Mppi::control_trajectory & controls)
 {
   CostBreakdown result;
   const int horizon =
     std::min({kMppiHorizon, static_cast<int>(states.cols()), static_cast<int>(controls.cols())});
-  if (horizon <= 0) {
+  if (horizon <= 0 || states.cols() <= 0) {
     return result;
   }
 
   int crash_status = 0;
   DYN::output_array output = DYN::output_array::Zero();
   for (int timestep = 0; timestep < horizon; ++timestep) {
-    DYN::state_array state = final_state;
-    if (timestep + 1 < states.cols()) {
-      state = states.col(timestep + 1);
-    }
+    // Use only getActualStateSeq states. Do not fall back to host-extrapolated x_final —
+    // that pad exists for published trajectory length and often trips lateral crash falsely.
+    const int state_col = std::min(timestep + 1, static_cast<int>(states.cols()) - 1);
+    const DYN::state_array state = states.col(state_col);
     model.stateToOutput(state, output);
     accumulateCostBreakdown(
       result,
       cost.computeRunningCostBreakdown(output, controls.col(timestep), timestep, &crash_status));
   }
 
-  model.stateToOutput(final_state, output);
+  model.stateToOutput(states.col(states.cols() - 1), output);
   accumulateCostBreakdown(result, cost.computeTerminalCostBreakdown(output));
 
   // MPPI-Generic stores the horizon-average of both running and terminal costs.
@@ -962,6 +962,30 @@ struct FirstOrderDubinsMppiInterface::Impl
     }
     mppi::cost::fillFirstOrderDubinsBicycleCostFromPathReference<kRefHorizon>(cost, ref);
 
+    // Lateral crash / soft lateral distance use the full DP polyline, not the delay-shifted
+    // tracking horizon (which starts at tracking_start_idx and false-positives near ego).
+    {
+      const auto & pts = diffusion_reference.points;
+      const int n_src = static_cast<int>(pts.size());
+      if (n_src >= 2) {
+        const int max_n = COST::kMaxLateralCorridorPoints;
+        const int n = std::min(n_src, max_n);
+        std::vector<float> corridor_x(static_cast<size_t>(n));
+        std::vector<float> corridor_y(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i) {
+          const int src =
+            (n_src <= max_n) ? i : ((i == n - 1) ? (n_src - 1) : (i * (n_src - 1) / (n - 1)));
+          corridor_x[static_cast<size_t>(i)] =
+            static_cast<float>(pts[static_cast<size_t>(src)].pose.position.x);
+          corridor_y[static_cast<size_t>(i)] =
+            static_cast<float>(pts[static_cast<size_t>(src)].pose.position.y);
+        }
+        cost.setLateralCorridor(corridor_x.data(), corridor_y.data(), n);
+      } else {
+        cost.clearLateralCorridor();
+      }
+    }
+
     const float delay_time = static_cast<float>(delay_steps) * kDt;
     int obstacle_count = 0;
     if (!tracked_objects.objects.empty()) {
@@ -1356,7 +1380,23 @@ FirstOrderDubinsMppiOptimizationResult FirstOrderDubinsMppiInterface::optimizeTr
   }
 
   Trajectory output = detail::buildOptimizedTrajectory(input, optimized_states, optimized_controls);
-  const auto validation = detail::validateOptimizedTrajectory(impl_->cost, optimized_states);
+
+  // Validate only states that come from getActualStateSeq. The host-extrapolated x_final
+  // (vendor GPU/host horizon mismatch) is appended so the published path matches the DP
+  // length, but it is not an MPPI-scored state and often sits >boundary_threshold off the
+  // corridor even when the optimized prefix is fine — that was causing false rejects.
+  std::vector<detail::OptimizedState> states_to_validate;
+  states_to_validate.reserve(optimized_states.size());
+  for (size_t i = 0; i < optimized_states.size(); ++i) {
+    const bool use_final = (static_cast<int>(i) + 1 >= n_state) && have_final_state;
+    if (!use_final) {
+      states_to_validate.push_back(optimized_states[i]);
+    }
+  }
+  if (states_to_validate.empty()) {
+    states_to_validate = optimized_states;
+  }
+  const auto validation = detail::validateOptimizedTrajectory(impl_->cost, states_to_validate);
   float max_pos_delta = 0.0F;
   float max_vel_delta = 0.0F;
   for (size_t i = 0; i < optimized_states.size(); ++i) {
@@ -1388,9 +1428,9 @@ FirstOrderDubinsMppiOptimizationResult FirstOrderDubinsMppiInterface::optimizeTr
     result.debug.baseline_cost = impl_->controller->getBaselineCost();
     result.debug.rollouts.clear();
   }
-  if (have_final_state) {
+  if (n_state > 0 && n_ctrl > 0) {
     result.debug.cost_breakdown = reconstructSelectedTrajectoryCost(
-      impl_->cost, impl_->model, state_trajectory, u_opt_traj, x_final);
+      impl_->cost, impl_->model, state_trajectory, u_opt_traj);
   }
 
   MppiDebugEgoState ego;

@@ -51,6 +51,78 @@ __host__ __device__ inline float distancePointToSegment(
   return vectorLength(px - (x0 + t * dx), py - (y0 + t * dy));
 }
 
+/** Perpendicular distance to the infinite line through (x0,y0)-(x1,y1). */
+__host__ __device__ inline float perpendicularDistanceToLine(
+  const float px, const float py, const float x0, const float y0, const float x1, const float y1)
+{
+  const float dx = x1 - x0;
+  const float dy = y1 - y0;
+  const float len_sq = dx * dx + dy * dy;
+  if (len_sq < 1.0E-8F) {
+    return vectorLength(px - x0, py - y0);
+  }
+#ifdef __CUDA_ARCH__
+  return fabsf((px - x0) * dy - (py - y0) * dx) / sqrtf(len_sq);
+#else
+  return std::fabs((px - x0) * dy - (py - y0) * dx) / std::sqrt(len_sq);
+#endif
+}
+
+/**
+ * Cross-track distance to a polyline. Interior projections use point-to-segment
+ * distance; projections past the first/last vertex use perpendicular distance to
+ * the extended terminal segment (so overshooting the horizon is not treated as
+ * lateral departure).
+ */
+__host__ __device__ inline float crossTrackDistanceToPolyline(
+  const float px, const float py, const float * poly_x, const float * poly_y, const int n_pts)
+{
+  if (n_pts <= 0) {
+    return 0.0F;
+  }
+  if (n_pts == 1) {
+    return vectorLength(px - poly_x[0], py - poly_y[0]);
+  }
+
+  float best_dist = 1.0E8F;
+  int best_i = 0;
+  float best_t_raw = 0.5F;
+  for (int i = 0; i < n_pts - 1; ++i) {
+    const float x0 = poly_x[i];
+    const float y0 = poly_y[i];
+    const float x1 = poly_x[i + 1];
+    const float y1 = poly_y[i + 1];
+    const float dx = x1 - x0;
+    const float dy = y1 - y0;
+    const float len_sq = dx * dx + dy * dy;
+    float t_raw = 0.0F;
+    float dist = 0.0F;
+    if (len_sq < 1.0E-8F) {
+      dist = vectorLength(px - x0, py - y0);
+      t_raw = 0.0F;
+    } else {
+      t_raw = ((px - x0) * dx + (py - y0) * dy) / len_sq;
+      const float t = clampUnitInterval(t_raw);
+      dist = vectorLength(px - (x0 + t * dx), py - (y0 + t * dy));
+    }
+    if (dist < best_dist) {
+      best_dist = dist;
+      best_i = i;
+      best_t_raw = t_raw;
+    }
+  }
+
+  // Past the start/end of the finite polyline: use true cross-track to the extended tip.
+  if (best_i == 0 && best_t_raw < 0.0F) {
+    return perpendicularDistanceToLine(px, py, poly_x[0], poly_y[0], poly_x[1], poly_y[1]);
+  }
+  if (best_i == n_pts - 2 && best_t_raw > 1.0F) {
+    return perpendicularDistanceToLine(
+      px, py, poly_x[n_pts - 2], poly_y[n_pts - 2], poly_x[n_pts - 1], poly_y[n_pts - 1]);
+  }
+  return best_dist;
+}
+
 /** Signed lateral offset from segment; positive = left of forward tangent. */
 __host__ __device__ inline float signedLateralOffsetPointToSegment(
   const float px, const float py, const float x0, const float y0, const float x1, const float y1)

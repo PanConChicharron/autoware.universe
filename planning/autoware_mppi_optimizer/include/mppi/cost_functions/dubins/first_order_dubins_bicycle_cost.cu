@@ -11,6 +11,7 @@ namespace
 {
 using O = FirstOrderDubinsBicycleParams::OutputIndex;
 using C = FirstOrderDubinsBicycleParams::ControlIndex;
+using mppi::cost::detail::crossTrackDistanceToPolyline;
 using mppi::cost::detail::distancePointToSegment;
 using mppi::cost::detail::orientedBoxCorners;
 using mppi::cost::detail::orientedBoxesOverlap;
@@ -98,6 +99,18 @@ void FirstOrderDubinsBicycleCostImpl<CLASS_T, NUM_TIMESTEPS, PARAMS_T, DYN_PARAM
   HANDLE_ERROR(cudaMemcpyAsync(
     this->cost_d_->ref_yaw_, ref_yaw_, sizeof(ref_yaw_), cudaMemcpyHostToDevice, this->stream_));
   HANDLE_ERROR(cudaMemcpyAsync(
+    &this->cost_d_->num_lateral_corridor_points_, &num_lateral_corridor_points_,
+    sizeof(num_lateral_corridor_points_), cudaMemcpyHostToDevice, this->stream_));
+  if (num_lateral_corridor_points_ > 0) {
+    const size_t bytes = static_cast<size_t>(num_lateral_corridor_points_) * sizeof(float);
+    HANDLE_ERROR(cudaMemcpyAsync(
+      this->cost_d_->lateral_corridor_x_, lateral_corridor_x_, bytes, cudaMemcpyHostToDevice,
+      this->stream_));
+    HANDLE_ERROR(cudaMemcpyAsync(
+      this->cost_d_->lateral_corridor_y_, lateral_corridor_y_, bytes, cudaMemcpyHostToDevice,
+      this->stream_));
+  }
+  HANDLE_ERROR(cudaMemcpyAsync(
     &this->cost_d_->num_obstacles_, &num_obstacles_, sizeof(num_obstacles_), cudaMemcpyHostToDevice,
     this->stream_));
   HANDLE_ERROR(cudaMemcpyAsync(
@@ -181,6 +194,27 @@ void FirstOrderDubinsBicycleCostImpl<CLASS_T, NUM_TIMESTEPS, PARAMS_T, DYN_PARAM
       ref_yaw_[i] = end_yaw;
     }
   }
+  dataToDevice();
+}
+
+template <class CLASS_T, int NUM_TIMESTEPS, class PARAMS_T, class DYN_PARAMS_T>
+void FirstOrderDubinsBicycleCostImpl<CLASS_T, NUM_TIMESTEPS, PARAMS_T, DYN_PARAMS_T>::
+  setLateralCorridor(const float * x, const float * y, const int count)
+{
+  const int n = std::max(0, std::min(count, kMaxLateralCorridorPoints));
+  num_lateral_corridor_points_ = n;
+  for (int i = 0; i < n; ++i) {
+    lateral_corridor_x_[i] = x[i];
+    lateral_corridor_y_[i] = y[i];
+  }
+  dataToDevice();
+}
+
+template <class CLASS_T, int NUM_TIMESTEPS, class PARAMS_T, class DYN_PARAMS_T>
+void FirstOrderDubinsBicycleCostImpl<CLASS_T, NUM_TIMESTEPS, PARAMS_T, DYN_PARAMS_T>::
+  clearLateralCorridor()
+{
+  num_lateral_corridor_points_ = 0;
   dataToDevice();
 }
 
@@ -315,22 +349,15 @@ __host__ __device__ float FirstOrderDubinsBicycleCostImpl<
   CLASS_T, NUM_TIMESTEPS, PARAMS_T,
   DYN_PARAMS_T>::computeLateralDistanceValue(const float x, const float y) const
 {
-  float min_dist = 0.0F;
-  if (NUM_TIMESTEPS <= 1) {
-    min_dist = vectorLength(x - ref_x_[0], y - ref_y_[0]);
-  } else {
-    min_dist = 1.0E8F;
-    for (int i = 0; i < NUM_TIMESTEPS - 1; ++i) {
-      const float segment_dist =
-        distancePointToSegment(x, y, ref_x_[i], ref_y_[i], ref_x_[i + 1], ref_y_[i + 1]);
-#ifdef __CUDA_ARCH__
-      min_dist = fminf(min_dist, segment_dist);
-#else
-      min_dist = std::min(min_dist, segment_dist);
-#endif
-    }
+  const float * poly_x = ref_x_;
+  const float * poly_y = ref_y_;
+  int n_pts = NUM_TIMESTEPS;
+  if (num_lateral_corridor_points_ >= 2) {
+    poly_x = lateral_corridor_x_;
+    poly_y = lateral_corridor_y_;
+    n_pts = num_lateral_corridor_points_;
   }
-  return min_dist;
+  return crossTrackDistanceToPolyline(x, y, poly_x, poly_y, n_pts);
 }
 
 template <class CLASS_T, int NUM_TIMESTEPS, class PARAMS_T, class DYN_PARAMS_T>
@@ -338,33 +365,35 @@ __host__ __device__ float FirstOrderDubinsBicycleCostImpl<
   CLASS_T, NUM_TIMESTEPS, PARAMS_T,
   DYN_PARAMS_T>::computeLateralYawErrorValue(const float x, const float y, const float yaw) const
 {
-  // Squared yaw error vs the tangent of the closest reference segment.
+  // Squared yaw error vs the tangent of the closest corridor / reference segment.
+  const float * poly_x = ref_x_;
+  const float * poly_y = ref_y_;
+  int n_pts = NUM_TIMESTEPS;
+  if (num_lateral_corridor_points_ >= 2) {
+    poly_x = lateral_corridor_x_;
+    poly_y = lateral_corridor_y_;
+    n_pts = num_lateral_corridor_points_;
+  }
+
   int best_i = 0;
   float best_dist = 1.0E8F;
-  if (NUM_TIMESTEPS <= 1) {
-    best_dist = vectorLength(x - ref_x_[0], y - ref_y_[0]);
+  if (n_pts <= 1) {
+    best_dist = vectorLength(x - poly_x[0], y - poly_y[0]);
   } else {
-    for (int i = 0; i < NUM_TIMESTEPS - 1; ++i) {
+    for (int i = 0; i < n_pts - 1; ++i) {
       const float segment_dist =
-        distancePointToSegment(x, y, ref_x_[i], ref_y_[i], ref_x_[i + 1], ref_y_[i + 1]);
-#ifdef __CUDA_ARCH__
+        distancePointToSegment(x, y, poly_x[i], poly_y[i], poly_x[i + 1], poly_y[i + 1]);
       if (segment_dist < best_dist) {
         best_dist = segment_dist;
         best_i = i;
       }
-#else
-      if (segment_dist < best_dist) {
-        best_dist = segment_dist;
-        best_i = i;
-      }
-#endif
     }
   }
 
-  float tangent_yaw = ref_yaw_[best_i];
-  if (NUM_TIMESTEPS > 1) {
-    const float dx = ref_x_[best_i + 1] - ref_x_[best_i];
-    const float dy = ref_y_[best_i + 1] - ref_y_[best_i];
+  float tangent_yaw = 0.0F;
+  if (n_pts > 1) {
+    const float dx = poly_x[best_i + 1] - poly_x[best_i];
+    const float dy = poly_y[best_i + 1] - poly_y[best_i];
     const float len_sq = dx * dx + dy * dy;
     if (len_sq > 1.0E-8F) {
 #ifdef __CUDA_ARCH__
@@ -373,6 +402,8 @@ __host__ __device__ float FirstOrderDubinsBicycleCostImpl<
       tangent_yaw = std::atan2(dy, dx);
 #endif
     }
+  } else if (num_lateral_corridor_points_ < 2) {
+    tangent_yaw = ref_yaw_[best_i];
   }
 
   const float yaw_diff = angle_utils::shortestAngularDistance(yaw, tangent_yaw);
@@ -891,3 +922,6 @@ constexpr int FirstOrderDubinsBicycleCostImpl<
 template <class CLASS_T, int NUM_TIMESTEPS, class PARAMS_T, class DYN_PARAMS_T>
 constexpr int FirstOrderDubinsBicycleCostImpl<
   CLASS_T, NUM_TIMESTEPS, PARAMS_T, DYN_PARAMS_T>::kMaxDrivableAreaSegments;
+template <class CLASS_T, int NUM_TIMESTEPS, class PARAMS_T, class DYN_PARAMS_T>
+constexpr int FirstOrderDubinsBicycleCostImpl<
+  CLASS_T, NUM_TIMESTEPS, PARAMS_T, DYN_PARAMS_T>::kMaxLateralCorridorPoints;

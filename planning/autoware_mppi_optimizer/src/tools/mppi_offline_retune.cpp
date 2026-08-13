@@ -596,20 +596,16 @@ int run(int argc, char ** argv)
       }
     }
     const bool force_nominal = !nominal_csv_override.empty() || !reseed_nominal_from_reference;
-    if (force_nominal && loadMppiDebugNominalCsv(nominal_path, nominal_accel, nominal_steer)) {
+    if (force_nominal) {
+      if (!loadMppiDebugNominalCsv(nominal_path, nominal_accel, nominal_steer)) {
+        std::cerr << "ERROR: missing warm-start nominal control " << nominal_path
+                  << "\n*_nominal.csv is the online u_nom warm-start. Re-log with a build that "
+                     "writes it, or pass --nominal-csv from a prior retune *_seed_nominal.csv.\n";
+        return 1;
+      }
       frame_mppi.setForcedNominalControl(nominal_accel, nominal_steer);
       if (!nominal_csv_override.empty()) {
         std::cout << "frame " << frame_id << " seeding u_nom from " << nominal_path << "\n";
-      }
-    } else if (force_nominal) {
-      static bool warned_missing_nominal = false;
-      if (!warned_missing_nominal) {
-        std::cerr
-          << "WARNING: missing " << nominal_path
-          << ". Reseeding u_nom from the diffusion "
-             "reference. Re-log with a build that writes *_nominal.csv for faithful warm-start "
-             "replay, or pass --nominal-csv from a prior retune *_seed_nominal.csv.\n";
-        warned_missing_nominal = true;
       }
     } else {
       std::cout << "frame " << frame_id

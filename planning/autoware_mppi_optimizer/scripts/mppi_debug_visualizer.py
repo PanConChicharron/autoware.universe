@@ -108,7 +108,7 @@ MPPI_MAX_WORST_VIZ_ROLLOUTS = 128
 # (Excludes bool/string runtime flags: enable_debug_trajectory_log, ignore_*, etc.)
 # Keep in sync with config/mppi_optimizer.param.yaml (overridden by cost_params.csv when present).
 DEFAULT_PARAMS: Dict[str, float] = {
-    "lambda": 70.0,
+    "lambda": 100.0,
     "desired_speed": 2.5,
     "speed_coeff": 300.0,
     "track_coeff": 1200.0,
@@ -124,11 +124,11 @@ DEFAULT_PARAMS: Dict[str, float] = {
     "boundary_threshold_left": -1.0,
     "boundary_threshold_right": -1.0,
     "lateral_acceleration_coeff": 100.0,
-    "lateral_jerk_coeff": 200.0,
+    "lateral_jerk_coeff": 100000.0,
     "longitudinal_jerk_coeff": 100.0,
     "accel_cmd_coeff": 50.0,
     "steer_cmd_coeff": 250.0,
-    "steer_rate_coeff": 300.0,
+    "steer_rate_coeff": 100000.0,
     "nominal_curvature_min_chord_length_m": 1.5,
     "obstacle_collision_margin": 0.2,
     "road_border_collision_margin": 0.3,
@@ -136,8 +136,9 @@ DEFAULT_PARAMS: Dict[str, float] = {
 }
 
 # (name, vmin, vmax) — keep in sync with DEFAULT_PARAMS keys.
+# vmax must cover yaml / logged values; create_sliders also expands to fit valinit.
 SLIDER_SPECS: List[Tuple[str, float, float]] = [
-    ("lambda", 100.0, 20000.0),
+    ("lambda", 1.0, 20000.0),
     ("desired_speed", 0.0, 20.0),
     ("track_coeff", 0.0, 10000.0),
     ("track_terminal_scale", 0.0, 50.0),
@@ -149,11 +150,11 @@ SLIDER_SPECS: List[Tuple[str, float, float]] = [
     ("corner_buffer_coeff", 0.0, 10000.0),
     ("corner_safe_margin", 0.0, 2.0),
     ("lateral_acceleration_coeff", 0.0, 5000.0),
-    ("lateral_jerk_coeff", 0.0, 10000.0),
+    ("lateral_jerk_coeff", 0.0, 500000.0),
     ("longitudinal_jerk_coeff", 0.0, 5000.0),
     ("accel_cmd_coeff", 0.0, 2000.0),
     ("steer_cmd_coeff", 0.0, 5000.0),
-    ("steer_rate_coeff", 0.0, 10000.0),
+    ("steer_rate_coeff", 0.0, 500000.0),
     ("nominal_curvature_min_chord_length_m", 0.0, 5.0),
     ("boundary_threshold", 0.1, 5.0),
     ("obstacle_collision_margin", 0.0, 2.0),
@@ -2196,9 +2197,14 @@ class OfflineLogVisualizer:
         top = 0.94
         for i, (name, vmin, vmax) in enumerate(SLIDER_SPECS):
             ax = self._fig.add_axes([0.72, top - i * (slider_h + gap), 0.26, slider_h])
-            self._sliders[name] = Slider(
-                ax, name, vmin, vmax, valinit=self._params.get(name, DEFAULT_PARAMS[name])
-            )
+            valinit = float(self._params.get(name, DEFAULT_PARAMS[name]))
+            # Matplotlib Slider clamps valinit into [vmin, vmax]; expand so logged/yaml
+            # values (e.g. lateral_jerk_coeff=1e5) are not silently truncated on Retune.
+            lo = min(vmin, valinit)
+            hi = max(vmax, valinit)
+            if hi <= lo:
+                hi = lo + 1.0e-6
+            self._sliders[name] = Slider(ax, name, lo, hi, valinit=valinit)
         ax_prev = self._fig.add_axes([0.72, 0.06, 0.06, 0.035])
         ax_next = self._fig.add_axes([0.785, 0.06, 0.06, 0.035])
         ax_run = self._fig.add_axes([0.85, 0.06, 0.065, 0.035])
