@@ -15,7 +15,7 @@
 #include "autoware/mppi_optimizer/detail/trajectory_utils.hpp"
 #include "autoware/mppi_optimizer/first_order_dubins_mppi_interface.hpp"
 
-#include <autoware_perception_msgs/autoware_perception_msgs/msg/detail/tracked_objects__struct.hpp>
+#include <autoware_perception_msgs/msg/tracked_objects.hpp>
 
 #include <cuda_runtime_api.h>
 #include <gtest/gtest.h>

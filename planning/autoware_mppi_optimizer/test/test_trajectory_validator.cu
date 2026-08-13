@@ -74,6 +74,13 @@ protected:
     std::array<float, kTestHorizon> y{};
     std::array<float, kTestHorizon> velocity{};
     std::array<float, kTestHorizon> yaw{};
+    for (int i = 0; i < kTestHorizon; ++i) {
+      // Line along y = 0 so polyline lateral distance equals |y| for nearby states.
+      x[static_cast<size_t>(i)] = 0.20F * static_cast<float>(i);
+      y[static_cast<size_t>(i)] = 0.0F;
+      velocity[static_cast<size_t>(i)] = 2.0F;
+      yaw[static_cast<size_t>(i)] = 0.0F;
+    }
     cost_->setReferenceTrajectory(x.data(), y.data(), velocity.data(), kTestHorizon, yaw.data());
   }
 
@@ -278,6 +285,89 @@ TEST_F(TrajectoryValidatorTest, DetectsLateralBoundaryViolationsAcrossHorizonAnd
         << "Failed case: " << tc.name;
     }
   }
+}
+
+TEST_F(TrajectoryValidatorTest, LateralCorridorIncludesGeometryBeforeDelayShiftedRef)
+{
+  // Delay-shifted tracking ref starts at x=2. Past-start cross-track to the extended tip
+  // already ignores along-track undershoot; a curved corridor still needs the full DP polyline
+  // when the extended first segment does not pass near ego.
+  auto params = makeParams();
+  params.boundary_threshold = 0.8F;
+  cost_->setParams(params);
+
+  std::array<float, kTestHorizon> ref_x{};
+  std::array<float, kTestHorizon> ref_y{};
+  std::array<float, kTestHorizon> ref_v{};
+  std::array<float, kTestHorizon> ref_yaw{};
+  for (int i = 0; i < kTestHorizon; ++i) {
+    // Path going north from (2,2), so extending the first segment does not pass through (0,0.4).
+    ref_x[static_cast<size_t>(i)] = 2.0F;
+    ref_y[static_cast<size_t>(i)] = 2.0F + static_cast<float>(i);
+    ref_v[static_cast<size_t>(i)] = 1.0F;
+    ref_yaw[static_cast<size_t>(i)] = 1.5707963F;
+  }
+  cost_->setReferenceTrajectory(
+    ref_x.data(), ref_y.data(), ref_v.data(), kTestHorizon, ref_yaw.data());
+
+  detail::OptimizedState near_ego;
+  near_ego.x = 0.0F;
+  near_ego.y = 0.4F;
+  near_ego.yaw = 0.0F;
+  near_ego.velocity = 1.0F;
+  near_ego.steering = 0.0F;
+
+  // Without full corridor: far from the delay-shifted path → crash.
+  EXPECT_FALSE(detail::validateOptimizedTrajectory(*cost_, {near_ego}).isValid());
+
+  // Full DP corridor along y=0.4 from x=0.. includes ego → valid.
+  constexpr int kCorridor = 16;
+  std::array<float, kCorridor> corridor_x{};
+  std::array<float, kCorridor> corridor_y{};
+  for (int i = 0; i < kCorridor; ++i) {
+    corridor_x[static_cast<size_t>(i)] = static_cast<float>(i);
+    corridor_y[static_cast<size_t>(i)] = 0.4F;
+  }
+  cost_->setLateralCorridor(corridor_x.data(), corridor_y.data(), kCorridor);
+  EXPECT_TRUE(detail::validateOptimizedTrajectory(*cost_, {near_ego}).isValid());
+
+  near_ego.y = 1.5F;
+  EXPECT_FALSE(detail::validateOptimizedTrajectory(*cost_, {near_ego}).isValid());
+}
+
+TEST_F(TrajectoryValidatorTest, PastPolylineEndUsesCrossTrackNotEndpointDistance)
+{
+  // Ref along x from 0..10. A point past the tip (x=11.5) with tiny cross-track must not
+  // crash: clamped segment distance to the endpoint would be ~1.5 m and falsely fail.
+  auto params = makeParams();
+  params.boundary_threshold = 0.8F;
+  cost_->setParams(params);
+
+  constexpr int kCorridor = 11;
+  std::array<float, kCorridor> corridor_x{};
+  std::array<float, kCorridor> corridor_y{};
+  for (int i = 0; i < kCorridor; ++i) {
+    corridor_x[static_cast<size_t>(i)] = static_cast<float>(i);
+    corridor_y[static_cast<size_t>(i)] = 0.0F;
+  }
+  cost_->setLateralCorridor(corridor_x.data(), corridor_y.data(), kCorridor);
+  // Also need a reference for the cost object; corridor drives lateral checks.
+  setStraightReference();
+  cost_->setLateralCorridor(corridor_x.data(), corridor_y.data(), kCorridor);
+
+  detail::OptimizedState past_end;
+  past_end.x = 11.5F;
+  past_end.y = 0.05F;
+  past_end.yaw = 0.0F;
+  past_end.velocity = 1.0F;
+  past_end.steering = 0.0F;
+
+  EXPECT_NEAR(cost_->computeLateralDistanceValue(past_end.x, past_end.y), 0.05F, 1.0E-4F);
+  EXPECT_TRUE(detail::validateOptimizedTrajectory(*cost_, {past_end}).isValid());
+
+  past_end.y = 1.0F;
+  EXPECT_NEAR(cost_->computeLateralDistanceValue(past_end.x, past_end.y), 1.0F, 1.0E-4F);
+  EXPECT_FALSE(detail::validateOptimizedTrajectory(*cost_, {past_end}).isValid());
 }
 
 }  // namespace

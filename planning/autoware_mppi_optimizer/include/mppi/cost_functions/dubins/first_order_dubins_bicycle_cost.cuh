@@ -71,6 +71,8 @@ public:
   static constexpr int kMaxDrivablePolygonVertices = 1024;
   static constexpr int kMaxRoadBorderSegments = 256;
   static constexpr int kMaxDrivableAreaSegments = 256;
+  /** Full diffusion-path polyline for spatial lateral / crash (not delay-shifted). */
+  static constexpr int kMaxLateralCorridorPoints = 256;
 
   using PARENT_CLASS = Cost<CLASS_T, PARAMS_T, DYN_PARAMS_T>;
   using output_array = typename PARENT_CLASS::output_array;
@@ -82,6 +84,15 @@ public:
 
   void setReferenceTrajectory(
     const float * x, const float * y, const float * v, int count, const float * yaw = nullptr);
+
+  /**
+   * Spatial corridor for lateral_distance / lateral crash / lateral yaw error.
+   * Prefer the full diffusion path (including samples before delay start_idx).
+   * When unset (< 2 points), those checks fall back to the time-aligned ref_ polyline.
+   */
+  void setLateralCorridor(const float * x, const float * y, int count);
+
+  void clearLateralCorridor();
 
   /** Static obstacles: same pose replicated at every MPPI horizon step. */
   void setOrientedBoxObstacles(
@@ -112,14 +123,16 @@ public:
   __host__ __device__ float computeHeadingValue(float yaw, int timestep) const;
 
   /**
-   * Pre time-indexed tracking: min Euclidean distance from (x,y) to the reference
-   * polyline (closest segment). Used by lateral_distance_coeff.
+   * Cross-track distance to the lateral corridor (or ref_ polyline). Projections past the
+   * polyline ends use perpendicular distance to the extended tip segment so horizon
+   * overshoot is not treated as lateral departure. Used by lateral_distance_coeff and
+   * exceedsLateralBoundary.
    */
   __host__ __device__ float computeLateralDistanceValue(float x, float y) const;
 
   /**
-   * Pre time-indexed heading: squared yaw error vs the tangent of the closest
-   * reference segment. Used by lateral_yaw_error_coeff.
+   * Squared yaw error vs the tangent of the closest corridor (or ref_) segment.
+   * Used by lateral_yaw_error_coeff.
    */
   __host__ __device__ float computeLateralYawErrorValue(float x, float y, float yaw) const;
 
@@ -188,6 +201,9 @@ public:
   float ref_y_[NUM_TIMESTEPS] = {};
   float ref_v_[NUM_TIMESTEPS] = {};
   float ref_yaw_[NUM_TIMESTEPS] = {};
+  int num_lateral_corridor_points_ = 0;
+  float lateral_corridor_x_[kMaxLateralCorridorPoints] = {};
+  float lateral_corridor_y_[kMaxLateralCorridorPoints] = {};
   int num_obstacles_ = 0;
   float obs_x_[kMaxObstacles][NUM_TIMESTEPS] = {};
   float obs_y_[kMaxObstacles][NUM_TIMESTEPS] = {};
