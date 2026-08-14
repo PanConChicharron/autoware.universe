@@ -18,12 +18,16 @@
     corner_safe_margin: 0.3
     crash_coeff: 100000.0
     boundary_threshold: 0.8
-    lateral_acceleration_coeff: 1000.0
-    lateral_jerk_coeff: 1000.0
-    longitudinal_jerk_coeff: 1000.0
-    accel_cmd_coeff: 0.0
-    steer_cmd_coeff: 0.0
-    steer_rate_coeff: 1000.0
+    lateral_acceleration_coeff: 100.0
+    lateral_jerk_coeff: 100000.0
+    longitudinal_jerk_coeff: 100.0
+    accel_cmd_coeff: 50.0
+    steer_cmd_coeff: 250.0
+    steer_rate_coeff: 100000.0
+    # MPPI control-sample noise std-devs around the nominal (u_nom).
+    accel_cmd_std_dev: 0.1
+    steer_cmd_std_dev: 0.002
+    
     obstacle_collision_margin: 0.2
     road_border_collision_margin: 0.3
     # Spatial window for Menger curvature when cold-starting nominal steering.
