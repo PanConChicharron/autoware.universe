@@ -12,9 +12,9 @@
     lateral_distance_coeff: 4000.0
     lateral_yaw_error_coeff: 500.0
     # Soft cost on remaining corridor chord length to path end [m]; 0 = off.
-    remaining_distance_coeff: 150.0
+    remaining_distance_coeff: 500.0
     # Soft cost on along-track distance past the corridor tip [m]; 0 = off.
-    path_overshoot_coeff: 0.0
+    path_overshoot_coeff: 1000.0
     # Track the center of the ego footprint against the time-indexed reference; 0 = off.
     track_center_coeff: 0.0
     # Soft clearance cost for ego corners near drivable-area boundaries; 0 = off.

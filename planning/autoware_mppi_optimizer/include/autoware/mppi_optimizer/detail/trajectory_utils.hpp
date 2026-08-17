@@ -57,6 +57,7 @@ struct OptimizedState
   float y{0.0F};
   float yaw{0.0F};
   float velocity{0.0F};
+  float acceleration{0.0F};
   float steering{0.0F};
 };
 

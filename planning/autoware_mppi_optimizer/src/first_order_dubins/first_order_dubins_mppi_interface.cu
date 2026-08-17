@@ -297,6 +297,8 @@ Trajectory buildNominalTrajectory(
   const int pos_y_idx = static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::POS_Y);
   const int yaw_idx = static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::YAW);
   const int vel_x_idx = static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::VEL_X);
+  const int accel_state_idx =
+    static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::ACCELERATION);
   const int accel_idx =
     static_cast<int>(FirstOrderDubinsBicycleParams::ControlIndex::ACCELERATION_CMD);
   const int steer_idx = static_cast<int>(FirstOrderDubinsBicycleParams::ControlIndex::STEER_CMD);
@@ -327,6 +329,7 @@ Trajectory buildNominalTrajectory(
     state.y = x(pos_y_idx);
     state.yaw = x(yaw_idx);
     state.velocity = x(vel_x_idx);
+    state.acceleration = x(accel_state_idx);
     // Publish steer_cmd (not tire angle) so the live viz δ_cmd panel shows u_nom.
     state.steering = cmd.steer_cmd;
     states.push_back(state);
@@ -1507,6 +1510,8 @@ FirstOrderDubinsMppiOptimizationResult FirstOrderDubinsMppiInterface::optimizeTr
   const int pos_y_idx = static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::POS_Y);
   const int yaw_idx = static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::YAW);
   const int vel_x_idx = static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::VEL_X);
+  const int accel_state_idx =
+    static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::ACCELERATION);
   const int steer_x_idx = static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::STEER_ANGLE);
   const int accel_cmd_idx =
     static_cast<int>(FirstOrderDubinsBicycleParams::ControlIndex::ACCELERATION_CMD);
@@ -1551,6 +1556,8 @@ FirstOrderDubinsMppiOptimizationResult FirstOrderDubinsMppiInterface::optimizeTr
     state.y = use_final ? x_final(pos_y_idx) : state_trajectory(pos_y_idx, control_col + 1);
     state.yaw = use_final ? x_final(yaw_idx) : state_trajectory(yaw_idx, control_col + 1);
     state.velocity = use_final ? x_final(vel_x_idx) : state_trajectory(vel_x_idx, control_col + 1);
+    state.acceleration =
+      use_final ? x_final(accel_state_idx) : state_trajectory(accel_state_idx, control_col + 1);
     state.steering =
       use_final ? x_final(steer_x_idx) : state_trajectory(steer_x_idx, control_col + 1);
     optimized_states.push_back(state);
