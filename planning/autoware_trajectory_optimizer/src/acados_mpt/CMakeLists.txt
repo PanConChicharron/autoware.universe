@@ -59,10 +59,14 @@ add_library(acados_interface_temporal SHARED
 add_dependencies(acados_interface_temporal generate_acados_code_temporal)
 
 # Binary dir first so real generated header shadows stub; source dir for clang-tidy/IDE when no build.
+# INSTALL: scoped dir for ament_auto USE_SCOPED_HEADER_INSTALL_DIR headers
+# (autoware/trajectory_optimizer/...), and unscoped include/ for manually installed
+# temporal_mpt/ and autoware/trajectory_optimizer/acados_* paths.
 target_include_directories(acados_interface_temporal PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+  $<INSTALL_INTERFACE:include/autoware_trajectory_optimizer>
   $<INSTALL_INTERFACE:include>
   ${ACADOS_SOURCE_DIR}/include
   ${ACADOS_SOURCE_DIR}/include/acados
