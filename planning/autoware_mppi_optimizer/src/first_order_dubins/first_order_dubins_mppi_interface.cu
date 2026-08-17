@@ -1598,7 +1598,7 @@ FirstOrderDubinsMppiOptimizationResult FirstOrderDubinsMppiInterface::optimizeTr
 
   result.trajectory = output;
   result.debug.reference_trajectory = input;
-  result.debug.optimized_trajectory = output;commands_rad = impl_->logged_nominal_steer;
+  result.debug.optimized_trajectory = output;
   result.debug.nominal_trajectory = buildNominalTrajectory(
     impl_->model, x_at_optimization, input, impl_->logged_nominal_accel,
     impl_->logged_nominal_steer);
