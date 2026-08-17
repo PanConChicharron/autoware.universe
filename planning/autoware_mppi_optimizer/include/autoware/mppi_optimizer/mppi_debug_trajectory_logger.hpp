@@ -80,7 +80,7 @@ struct MppiDebugEgoState
  *   <log_dir>/000000_drivable.csv
  *   <log_dir>/000000_objects.csv
  *   <log_dir>/000000_control_history.csv  (SG taps at cycle start)
- *   <log_dir>/000000_delay_buffer.csv     (FIFO before IC roll)
+ *   <log_dir>/000000_delay_buffer.csv     (per-channel FIFOs before optimize)
  *   <log_dir>/000000_applied.csv          (u[0] applied this cycle)
  *   ...
  *
@@ -150,6 +150,8 @@ public:
         out << "heading_coeff," << cost.heading_coeff << "\n";
         out << "lateral_distance_coeff," << cost.lateral_distance_coeff << "\n";
         out << "lateral_yaw_error_coeff," << cost.lateral_yaw_error_coeff << "\n";
+        out << "remaining_distance_coeff," << cost.remaining_distance_coeff << "\n";
+        out << "path_overshoot_coeff," << cost.path_overshoot_coeff << "\n";
         out << "track_center_coeff," << cost.track_center_coeff << "\n";
         out << "corner_buffer_coeff," << cost.corner_buffer_coeff << "\n";
         out << "corner_safe_margin," << cost.corner_safe_margin << "\n";
@@ -158,6 +160,8 @@ public:
         out << "accel_cmd_coeff," << cost.accel_cmd_coeff << "\n";
         out << "steer_cmd_coeff," << cost.steer_cmd_coeff << "\n";
         out << "steer_rate_coeff," << cost.steer_rate_coeff << "\n";
+        out << "accel_cmd_std_dev," << cost.accel_cmd_std_dev << "\n";
+        out << "steer_cmd_std_dev," << cost.steer_cmd_std_dev << "\n";
         out << "nominal_curvature_min_chord_length_m," << cost.nominal_curvature_min_chord_length_m
             << "\n";
         out << "lateral_acceleration_coeff," << cost.lateral_acceleration_coeff << "\n";
@@ -202,6 +206,8 @@ public:
       out << "force_cold_start_each_step," << (options.force_cold_start_each_step ? 1 : 0) << "\n";
       out << "skip_if_invalid," << (options.skip_if_invalid ? 1 : 0) << "\n";
       out << "use_last_control_as_nominal," << (options.use_last_control_as_nominal ? 1 : 0)
+          << "\n";
+      out << "use_temporal_mpt_as_nominal," << (options.use_temporal_mpt_as_nominal ? 1 : 0)
           << "\n";
     }
     runtime_written_ = true;

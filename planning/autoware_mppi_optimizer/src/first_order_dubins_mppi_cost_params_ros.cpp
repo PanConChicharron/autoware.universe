@@ -40,6 +40,9 @@ void declare_first_order_dubins_mppi_cost_params(rclcpp::Node & node, const std:
     param_name(prefix, "lateral_distance_coeff"), defaults.lateral_distance_coeff);
   node.declare_parameter(
     param_name(prefix, "lateral_yaw_error_coeff"), defaults.lateral_yaw_error_coeff);
+  node.declare_parameter(
+    param_name(prefix, "remaining_distance_coeff"), defaults.remaining_distance_coeff);
+  node.declare_parameter(param_name(prefix, "path_overshoot_coeff"), defaults.path_overshoot_coeff);
   node.declare_parameter(param_name(prefix, "track_center_coeff"), defaults.track_center_coeff);
   node.declare_parameter(param_name(prefix, "corner_buffer_coeff"), defaults.corner_buffer_coeff);
   node.declare_parameter(param_name(prefix, "corner_safe_margin"), defaults.corner_safe_margin);
@@ -48,6 +51,8 @@ void declare_first_order_dubins_mppi_cost_params(rclcpp::Node & node, const std:
   node.declare_parameter(param_name(prefix, "accel_cmd_coeff"), defaults.accel_cmd_coeff);
   node.declare_parameter(param_name(prefix, "steer_cmd_coeff"), defaults.steer_cmd_coeff);
   node.declare_parameter(param_name(prefix, "steer_rate_coeff"), defaults.steer_rate_coeff);
+  node.declare_parameter(param_name(prefix, "accel_cmd_std_dev"), defaults.accel_cmd_std_dev);
+  node.declare_parameter(param_name(prefix, "steer_cmd_std_dev"), defaults.steer_cmd_std_dev);
   node.declare_parameter(
     param_name(prefix, "nominal_curvature_min_chord_length_m"),
     defaults.nominal_curvature_min_chord_length_m);
@@ -85,6 +90,10 @@ FirstOrderDubinsMppiCostParams get_first_order_dubins_mppi_cost_params(
     node.get_parameter(param_name(prefix, "lateral_distance_coeff")).as_double());
   params.lateral_yaw_error_coeff = static_cast<float>(
     node.get_parameter(param_name(prefix, "lateral_yaw_error_coeff")).as_double());
+  params.remaining_distance_coeff = static_cast<float>(
+    node.get_parameter(param_name(prefix, "remaining_distance_coeff")).as_double());
+  params.path_overshoot_coeff =
+    static_cast<float>(node.get_parameter(param_name(prefix, "path_overshoot_coeff")).as_double());
   params.track_center_coeff =
     static_cast<float>(node.get_parameter(param_name(prefix, "track_center_coeff")).as_double());
   params.corner_buffer_coeff =
@@ -101,6 +110,10 @@ FirstOrderDubinsMppiCostParams get_first_order_dubins_mppi_cost_params(
     static_cast<float>(node.get_parameter(param_name(prefix, "steer_cmd_coeff")).as_double());
   params.steer_rate_coeff =
     static_cast<float>(node.get_parameter(param_name(prefix, "steer_rate_coeff")).as_double());
+  params.accel_cmd_std_dev =
+    static_cast<float>(node.get_parameter(param_name(prefix, "accel_cmd_std_dev")).as_double());
+  params.steer_cmd_std_dev =
+    static_cast<float>(node.get_parameter(param_name(prefix, "steer_cmd_std_dev")).as_double());
   params.nominal_curvature_min_chord_length_m = static_cast<float>(
     node.get_parameter(param_name(prefix, "nominal_curvature_min_chord_length_m")).as_double());
   params.lateral_acceleration_coeff = static_cast<float>(

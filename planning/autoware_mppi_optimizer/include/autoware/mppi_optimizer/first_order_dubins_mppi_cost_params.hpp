@@ -29,6 +29,10 @@ struct FirstOrderDubinsMppiCostParams
   float heading_coeff{500.0F};
   float lateral_distance_coeff{0.0F};
   float lateral_yaw_error_coeff{0.0F};
+  /** Soft cost on remaining corridor chord length [m]; 0 disables. */
+  float remaining_distance_coeff{0.0F};
+  /** Soft cost on along-track overshoot past the corridor tip [m]; 0 disables. */
+  float path_overshoot_coeff{0.0F};
   float track_center_coeff{0.0F};
   float corner_buffer_coeff{0.0F};
   float corner_safe_margin{0.3F};
@@ -37,6 +41,10 @@ struct FirstOrderDubinsMppiCostParams
   float accel_cmd_coeff{0.0F};
   float steer_cmd_coeff{0.0F};
   float steer_rate_coeff{0.0F};
+  /** Gaussian sampling std-dev on acceleration command [m/s^2] around u_nom. */
+  float accel_cmd_std_dev{0.35F};
+  /** Gaussian sampling std-dev on steer command [rad] around u_nom. */
+  float steer_cmd_std_dev{0.024F};
   /** Spatial window used only when deriving a cold-start nominal steer from the reference. */
   float nominal_curvature_min_chord_length_m{1.5F};
   float lateral_acceleration_coeff{300.0F};

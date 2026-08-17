@@ -51,6 +51,7 @@ add_custom_target(generate_acados_code_temporal DEPENDS ${GENERATED_TEMPORAL_MPC
 # 4. acados_interface_temporal library
 add_library(acados_interface_temporal SHARED
   ${CMAKE_CURRENT_SOURCE_DIR}/src/acados_interface.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/path_tracking_solver.cpp
   ${GENERATED_TEMPORAL_MPC_FILES}
 )
 
@@ -58,10 +59,14 @@ add_library(acados_interface_temporal SHARED
 add_dependencies(acados_interface_temporal generate_acados_code_temporal)
 
 # Binary dir first so real generated header shadows stub; source dir for clang-tidy/IDE when no build.
+# INSTALL: scoped dir for ament_auto USE_SCOPED_HEADER_INSTALL_DIR headers
+# (autoware/trajectory_optimizer/...), and unscoped include/ for manually installed
+# temporal_mpt/ and autoware/trajectory_optimizer/acados_* paths.
 target_include_directories(acados_interface_temporal PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+  $<INSTALL_INTERFACE:include/autoware_trajectory_optimizer>
   $<INSTALL_INTERFACE:include>
   ${ACADOS_SOURCE_DIR}/include
   ${ACADOS_SOURCE_DIR}/include/acados
@@ -69,6 +74,9 @@ target_include_directories(acados_interface_temporal PUBLIC
   ${ACADOS_SOURCE_DIR}/include/blasfeo/include
   ${ACADOS_SOURCE_DIR}/include/hpipm/include
 )
+
+# Public consumer API (no generated acados headers).
+target_compile_features(acados_interface_temporal PUBLIC cxx_std_17)
 
 target_link_libraries(acados_interface_temporal PUBLIC acados)
 

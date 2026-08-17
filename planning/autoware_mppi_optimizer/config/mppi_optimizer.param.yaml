@@ -3,14 +3,18 @@
     # Vehicle actuation dynamics are loaded from $(vehicle_model)_description/config/simulator_model.param.yaml
 
     # FirstOrderDubinsBicycleCostParams (see first_order_dubins_bicycle_cost.cuh)
-    lambda: 500.0
+    lambda: 100.0
     speed_coeff: 300.0
     track_coeff: 0.0
-    track_terminal_scale: 0.0
+    track_terminal_scale: 10.0
     heading_coeff: 0.0
     # Spatial (closest-segment) costs restored from pre time-indexed tracking; 0 = off.
-    lateral_distance_coeff: 100.0
-    lateral_yaw_error_coeff: 10.0
+    lateral_distance_coeff: 4000.0
+    lateral_yaw_error_coeff: 500.0
+    # Soft cost on remaining corridor chord length to path end [m]; 0 = off.
+    remaining_distance_coeff: 150.0
+    # Soft cost on along-track distance past the corridor tip [m]; 0 = off.
+    path_overshoot_coeff: 0.0
     # Track the center of the ego footprint against the time-indexed reference; 0 = off.
     track_center_coeff: 0.0
     # Soft clearance cost for ego corners near drivable-area boundaries; 0 = off.
@@ -18,12 +22,16 @@
     corner_safe_margin: 0.3
     crash_coeff: 100000.0
     boundary_threshold: 0.8
-    lateral_acceleration_coeff: 1000.0
-    lateral_jerk_coeff: 1000.0
-    longitudinal_jerk_coeff: 1000.0
-    accel_cmd_coeff: 0.0
-    steer_cmd_coeff: 0.0
-    steer_rate_coeff: 1000.0
+    lateral_acceleration_coeff: 100.0
+    lateral_jerk_coeff: 10.0
+    longitudinal_jerk_coeff: 100.0
+    accel_cmd_coeff: 50.0
+    steer_cmd_coeff: 250.0
+    steer_rate_coeff: 20000.0
+    # MPPI control-sample noise std-devs around the nominal (u_nom).
+    accel_cmd_std_dev: 0.1
+    steer_cmd_std_dev: 0.02
+
     obstacle_collision_margin: 0.2
     road_border_collision_margin: 0.3
     # Spatial window for Menger curvature when cold-starting nominal steering.
@@ -42,3 +50,6 @@
     skip_if_invalid: true  # if the MPPI output is invalid (i.e., collides with obstacles or road borders), the input reference is returned
     # Warm-start u_nom from shifted previous optimized controls (else reseed from DP each cycle).
     use_last_control_as_nominal: false
+    # Cold-seed u_nom from acados temporal MPT (same N=80, dt=0.1 as MPPI). Falls back to
+    # geometric diffusion seed if the solve fails.
+    use_temporal_mpt_as_nominal: false

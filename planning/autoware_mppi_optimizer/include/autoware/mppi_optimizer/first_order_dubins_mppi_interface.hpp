@@ -78,6 +78,8 @@ struct FirstOrderDubinsMppiCostBreakdown
   float heading{0.0F};
   float lateral_distance{0.0F};
   float lateral_yaw_error{0.0F};
+  float remaining_distance{0.0F};
+  float path_overshoot{0.0F};
   float track_center{0.0F};
   float corner_buffer{0.0F};
   float drivable_area{0.0F};
@@ -95,9 +97,10 @@ struct FirstOrderDubinsMppiCostBreakdown
 
   [[nodiscard]] float componentTotal() const
   {
-    return speed + track + heading + lateral_distance + lateral_yaw_error + track_center +
-           corner_buffer + drivable_area + acceleration_command + steering_command +
-           lateral_acceleration + lateral_jerk + longitudinal_jerk + steering_rate + crash;
+    return speed + track + heading + lateral_distance + lateral_yaw_error + remaining_distance +
+           path_overshoot + track_center + corner_buffer + drivable_area + acceleration_command +
+           steering_command + lateral_acceleration + lateral_jerk + longitudinal_jerk +
+           steering_rate + crash;
   }
 };
 
@@ -168,6 +171,8 @@ struct FirstOrderDubinsMppiDebug
 {
   Trajectory reference_trajectory;
   Trajectory optimized_trajectory;
+  /** Open-loop rollout of the seeded u_nom warm-start (accel/steer cmds in a / front_wheel). */
+  Trajectory nominal_trajectory;
   std::vector<std::pair<float, float>> optimal_horizon;
   std::vector<FirstOrderDubinsMppiRollout> rollouts;
   FirstOrderDubinsMppiNominalControlProfile nominal_control_profile;
@@ -274,8 +279,9 @@ public:
   void setControlHistory(float accel_tm2, float steer_tm2, float accel_tm1, float steer_tm1);
 
   /**
-   * @brief Seed the input-delay FIFO with already-sent (accel, steer) commands (oldest first).
-   *        Length should equal the quantized delay steps; empty clears / disables seeding.
+   * @brief Seed per-channel input-delay FIFOs with already-sent commands (oldest first).
+   *        Accel uses the first N_acc samples; steer uses the first N_steer samples.
+   *        Empty clears / disables forced seeding (falls back to measured hold).
    */
   void setInputDelayBuffer(
     const std::vector<float> & accel_cmd, const std::vector<float> & steer_cmd);
