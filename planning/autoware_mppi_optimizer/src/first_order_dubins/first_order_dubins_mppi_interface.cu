@@ -731,9 +731,9 @@ struct FirstOrderDubinsMppiInterface::Impl
       vehicle_params.steer_time_constant, vehicle_params.acc_time_delay, acc_delay_steps,
       vehicle_params.steer_time_delay, steer_delay_steps, vehicle_params.steer_rate_lim,
       vehicle_params.vel_rate_lim, vehicle_params.ego_length, vehicle_params.ego_width,
-      vehicle_params.ego_axle_to_box_center, cost_params.desired_speed,
-      cost_params.boundary_threshold, cost_params.obstacle_collision_margin,
-      cost_params.road_border_collision_margin, cost_params.drivable_area_crossing_coeff);
+      vehicle_params.ego_axle_to_box_center, cost_params.boundary_threshold,
+      cost_params.obstacle_collision_margin, cost_params.road_border_collision_margin,
+      cost_params.drivable_area_crossing_coeff);
   }
 
   void resetTrackingState()

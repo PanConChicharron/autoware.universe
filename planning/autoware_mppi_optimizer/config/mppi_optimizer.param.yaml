@@ -4,7 +4,6 @@
 
     # FirstOrderDubinsBicycleCostParams (see first_order_dubins_bicycle_cost.cuh)
     lambda: 100.0
-    desired_speed: 2.5
     speed_coeff: 300.0
     track_coeff: 0.0
     track_terminal_scale: 10.0
@@ -32,7 +31,7 @@
     # MPPI control-sample noise std-devs around the nominal (u_nom).
     accel_cmd_std_dev: 0.1
     steer_cmd_std_dev: 0.02
-    
+
     obstacle_collision_margin: 0.2
     road_border_collision_margin: 0.3
     # Spatial window for Menger curvature when cold-starting nominal steering.
