@@ -37,6 +37,11 @@ struct FirstOrderDubinsMppiRuntimeOptions
    * instead of the geometric diffusion seed. Falls back to diffusion seed on solve failure.
    */
   bool use_temporal_mpt_as_nominal{false};
+  /**
+   * When false, ignore vehicle acc/steer time delays in the MPPI plant (N_acc = N_steer = 0).
+   * Vehicle τ (first-order lag) is unchanged. Default true preserves delay compensation.
+   */
+  bool enable_input_delay_compensation{true};
 };
 
 }  // namespace autoware::mppi_optimizer

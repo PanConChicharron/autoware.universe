@@ -38,6 +38,10 @@
     nominal_curvature_min_chord_length_m: 1.5
     drivable_area_crossing_coeff: 10.0
 
+    # When false, MPPI plant ignores acc/steer input delays (N=0). First-order lag τ still applies.
+    # Delays still come from simulator_model when this is true.
+    enable_input_delay_compensation: true
+
     # Optional offline debug logging for mppi_debug_visualizer.py --log-dir
     # Empty directory resolves to $XDG_CACHE_HOME/autoware/mppi_debug_log
     # (or $HOME/.cache/autoware/mppi_debug_log).

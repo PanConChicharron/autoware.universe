@@ -286,7 +286,9 @@ Trajectory buildOptimizedTrajectory(
     output_point.pose.position.z = input_point.pose.position.z;
     output_point.pose.orientation = quaternionFromYaw(state.yaw);
     output_point.longitudinal_velocity_mps = state.velocity;
-    // Plant longitudinal accel (first-order lag state), not undelayed accel_cmd.
+    // Plant longitudinal accel / tire angle (lag states), not undelayed cmds.
+    // output_point.acceleration_mps2 = state.acceleration;
+    // output_point.front_wheel_angle_rad = state.steering;
     output_point.acceleration_mps2 = controls[i].accel_cmd;
     output_point.front_wheel_angle_rad = controls[i].steer_cmd;
   }
