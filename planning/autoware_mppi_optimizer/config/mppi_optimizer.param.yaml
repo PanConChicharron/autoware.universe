@@ -12,9 +12,9 @@
     lateral_distance_coeff: 4000.0
     lateral_yaw_error_coeff: 500.0
     # Soft cost on remaining corridor chord length to path end [m]; 0 = off.
-    remaining_distance_coeff: 150.0
+    remaining_distance_coeff: 500.0
     # Soft cost on along-track distance past the corridor tip [m]; 0 = off.
-    path_overshoot_coeff: 0.0
+    path_overshoot_coeff: 1000.0
     # Track the center of the ego footprint against the time-indexed reference; 0 = off.
     track_center_coeff: 0.0
     # Soft clearance cost for ego corners near drivable-area boundaries; 0 = off.
@@ -37,6 +37,10 @@
     # Spatial window for Menger curvature when cold-starting nominal steering.
     nominal_curvature_min_chord_length_m: 1.5
     drivable_area_crossing_coeff: 10.0
+
+    # When false, MPPI plant ignores acc/steer input delays (N=0). First-order lag τ still applies.
+    # Delays still come from simulator_model when this is true.
+    enable_input_delay_compensation: true
 
     # Optional offline debug logging for mppi_debug_visualizer.py --log-dir
     # Empty directory resolves to $XDG_CACHE_HOME/autoware/mppi_debug_log

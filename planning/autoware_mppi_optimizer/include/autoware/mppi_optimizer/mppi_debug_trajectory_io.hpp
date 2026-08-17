@@ -412,6 +412,8 @@ inline bool loadMppiDebugRuntimeOptionsCsv(
     as_bool("use_last_control_as_nominal", options.use_last_control_as_nominal);
   options.use_temporal_mpt_as_nominal =
     as_bool("use_temporal_mpt_as_nominal", options.use_temporal_mpt_as_nominal);
+  options.enable_input_delay_compensation =
+    as_bool("enable_input_delay_compensation", options.enable_input_delay_compensation);
   return true;
 }
 

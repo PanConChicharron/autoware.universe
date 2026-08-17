@@ -297,6 +297,8 @@ Trajectory buildNominalTrajectory(
   const int pos_y_idx = static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::POS_Y);
   const int yaw_idx = static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::YAW);
   const int vel_x_idx = static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::VEL_X);
+  const int accel_state_idx =
+    static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::ACCELERATION);
   const int accel_idx =
     static_cast<int>(FirstOrderDubinsBicycleParams::ControlIndex::ACCELERATION_CMD);
   const int steer_idx = static_cast<int>(FirstOrderDubinsBicycleParams::ControlIndex::STEER_CMD);
@@ -327,6 +329,7 @@ Trajectory buildNominalTrajectory(
     state.y = x(pos_y_idx);
     state.yaw = x(yaw_idx);
     state.velocity = x(vel_x_idx);
+    state.acceleration = x(accel_state_idx);
     // Publish steer_cmd (not tire angle) so the live viz δ_cmd panel shows u_nom.
     state.steering = cmd.steer_cmd;
     states.push_back(state);
@@ -593,6 +596,8 @@ struct FirstOrderDubinsMppiInterface::Impl
   bool use_last_control_as_nominal{false};
   /** Cold-seed u_nom from acados temporal MPT instead of geometric diffusion seed. */
   bool use_temporal_mpt_as_nominal{false};
+  /** When false, force N_acc = N_steer = 0 (vehicle delay params ignored). */
+  bool enable_input_delay_compensation{true};
   detail::TemporalMptNominalSeeder temporal_mpt_nominal_seeder;
   /** Fill debug.rollouts with top-K weighted samples (CPU replay). Offline retune only by default.
    */
@@ -650,8 +655,12 @@ struct FirstOrderDubinsMppiInterface::Impl
     model.setParams(dyn);
     temporal_mpt_nominal_seeder.setWheelBase(vehicle_params.wheel_base);
 
-    acc_delay_steps = sampledDelaySteps(0.0F, vehicle_params.acc_time_delay, kDt);
-    steer_delay_steps = sampledDelaySteps(0.0F, vehicle_params.steer_time_delay, kDt);
+    acc_delay_steps = enable_input_delay_compensation
+                        ? sampledDelaySteps(0.0F, vehicle_params.acc_time_delay, kDt)
+                        : 0;
+    steer_delay_steps = enable_input_delay_compensation
+                          ? sampledDelaySteps(0.0F, vehicle_params.steer_time_delay, kDt)
+                          : 0;
     dyn.acc_delay_steps = acc_delay_steps;
     dyn.steer_delay_steps = steer_delay_steps;
     model.setParams(dyn);
@@ -748,8 +757,13 @@ struct FirstOrderDubinsMppiInterface::Impl
 
   void syncDelayStepsToModel()
   {
-    acc_delay_steps = sampledDelaySteps(sim_time, vehicle_params.acc_time_delay, kDt);
-    steer_delay_steps = sampledDelaySteps(sim_time, vehicle_params.steer_time_delay, kDt);
+    if (enable_input_delay_compensation) {
+      acc_delay_steps = sampledDelaySteps(sim_time, vehicle_params.acc_time_delay, kDt);
+      steer_delay_steps = sampledDelaySteps(sim_time, vehicle_params.steer_time_delay, kDt);
+    } else {
+      acc_delay_steps = 0;
+      steer_delay_steps = 0;
+    }
     dyn.acc_delay_steps = acc_delay_steps;
     dyn.steer_delay_steps = steer_delay_steps;
     model.setParams(dyn);
@@ -1303,9 +1317,21 @@ void FirstOrderDubinsMppiInterface::setRuntimeOptions(
     throw std::runtime_error("FirstOrderDubinsMppiInterface implementation is missing");
   }
   impl_->use_temporal_mpt_as_nominal = options.use_temporal_mpt_as_nominal;
+  impl_->enable_input_delay_compensation = options.enable_input_delay_compensation;
+  if (impl_->initialized) {
+    impl_->syncDelayStepsToModel();
+    if (!impl_->enable_input_delay_compensation) {
+      impl_->accel_delay_buffer.clear();
+      impl_->steer_delay_buffer.clear();
+      impl_->delay_buffer_seeded = false;
+      impl_->loadDelayPipesIntoState();
+    }
+  }
   RCLCPP_INFO(
-    mppiLogger(), "MPPI nominal seed: use_temporal_mpt_as_nominal=%s",
-    options.use_temporal_mpt_as_nominal ? "true" : "false");
+    mppiLogger(),
+    "MPPI nominal seed: use_temporal_mpt_as_nominal=%s enable_input_delay_compensation=%s",
+    options.use_temporal_mpt_as_nominal ? "true" : "false",
+    options.enable_input_delay_compensation ? "true" : "false");
 }
 void FirstOrderDubinsMppiInterface::setDebugTrajectoryLogging(
   const bool enable, const std::string & directory)
@@ -1344,6 +1370,7 @@ void FirstOrderDubinsMppiInterface::setAblationOptions(
   runtime.skip_if_invalid = skip_if_invalid;
   runtime.use_last_control_as_nominal = use_last_control_as_nominal;
   runtime.use_temporal_mpt_as_nominal = impl_->use_temporal_mpt_as_nominal;
+  runtime.enable_input_delay_compensation = impl_->enable_input_delay_compensation;
   impl_->debug_trajectory_logger.writeRuntimeOptionsOnce(runtime);
 }
 
@@ -1507,6 +1534,8 @@ FirstOrderDubinsMppiOptimizationResult FirstOrderDubinsMppiInterface::optimizeTr
   const int pos_y_idx = static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::POS_Y);
   const int yaw_idx = static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::YAW);
   const int vel_x_idx = static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::VEL_X);
+  const int accel_state_idx =
+    static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::ACCELERATION);
   const int steer_x_idx = static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::STEER_ANGLE);
   const int accel_cmd_idx =
     static_cast<int>(FirstOrderDubinsBicycleParams::ControlIndex::ACCELERATION_CMD);
@@ -1551,6 +1580,8 @@ FirstOrderDubinsMppiOptimizationResult FirstOrderDubinsMppiInterface::optimizeTr
     state.y = use_final ? x_final(pos_y_idx) : state_trajectory(pos_y_idx, control_col + 1);
     state.yaw = use_final ? x_final(yaw_idx) : state_trajectory(yaw_idx, control_col + 1);
     state.velocity = use_final ? x_final(vel_x_idx) : state_trajectory(vel_x_idx, control_col + 1);
+    state.acceleration =
+      use_final ? x_final(accel_state_idx) : state_trajectory(accel_state_idx, control_col + 1);
     state.steering =
       use_final ? x_final(steer_x_idx) : state_trajectory(steer_x_idx, control_col + 1);
     optimized_states.push_back(state);
@@ -1634,6 +1665,7 @@ FirstOrderDubinsMppiOptimizationResult FirstOrderDubinsMppiInterface::optimizeTr
     runtime.skip_if_invalid = impl_->skip_if_invalid;
     runtime.use_last_control_as_nominal = impl_->use_last_control_as_nominal;
     runtime.use_temporal_mpt_as_nominal = impl_->use_temporal_mpt_as_nominal;
+    runtime.enable_input_delay_compensation = impl_->enable_input_delay_compensation;
     impl_->debug_trajectory_logger.writeRuntimeOptionsOnce(runtime);
   }
   impl_->debug_trajectory_logger.logFrame(

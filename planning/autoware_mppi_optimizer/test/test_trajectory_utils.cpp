@@ -320,7 +320,7 @@ TEST(OutputConversion, OverwritesOnlyAvailablePostStepSamples)
 {
   const auto input = makeTrajectory(3U, 1.0, 2.0F);
   const std::vector<OptimizedState> states = {
-    {10.0F, 20.0F, 0.3F, 4.0F, 0.1F}, {11.0F, 21.0F, 0.4F, 5.0F, 0.2F}};
+    {10.0F, 20.0F, 0.3F, 4.0F, 0.7F, 0.1F}, {11.0F, 21.0F, 0.4F, 5.0F, 0.8F, 0.2F}};
   const std::vector<FirstOrderDubinsMppiControl> controls = {{0.5F, -0.1F}, {0.6F, -0.2F}};
 
   const auto output = buildOptimizedTrajectory(input, states, controls);
@@ -331,7 +331,7 @@ TEST(OutputConversion, OverwritesOnlyAvailablePostStepSamples)
   EXPECT_DOUBLE_EQ(output.points[0].pose.position.z, input.points[0].pose.position.z);
   EXPECT_NEAR(tf2::getYaw(output.points[0].pose.orientation), 0.3, 1.0E-6);
   EXPECT_FLOAT_EQ(output.points[0].longitudinal_velocity_mps, 4.0F);
-  EXPECT_FLOAT_EQ(output.points[0].acceleration_mps2, 0.5F);
+  EXPECT_FLOAT_EQ(output.points[0].acceleration_mps2, 0.7F);
   EXPECT_FLOAT_EQ(output.points[0].front_wheel_angle_rad, 0.1F);
   EXPECT_FLOAT_EQ(output.points[0].lateral_velocity_mps, input.points[0].lateral_velocity_mps);
   EXPECT_TRUE(output.points[2] == input.points[2]);
