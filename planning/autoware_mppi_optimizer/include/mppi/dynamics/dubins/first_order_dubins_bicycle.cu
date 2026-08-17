@@ -39,29 +39,32 @@ __host__ __device__ void advanceInputDelayPipes(
   const FirstOrderDubinsBicycleParams & p, const float * state, float * next_state,
   const float * control)
 {
+  constexpr int kMax = FirstOrderDubinsBicycleParams::kMaxInputDelaySteps;
   const int n_acc = clampInputDelaySteps(p.acc_delay_steps);
   const int n_steer = clampInputDelaySteps(p.steer_delay_steps);
   const float accel_cmd = control[static_cast<int>(C::ACCELERATION_CMD)];
   const float steer_cmd = control[static_cast<int>(C::STEER_CMD)];
 
-  if (n_acc > 0) {
-    for (int i = 0; i < n_acc - 1; ++i) {
+  // Fixed trip count so the compiler can fully unroll (n_* chosen at runtime).
+#ifdef __CUDA_ARCH__
+#pragma unroll
+#endif
+  for (int i = 0; i < kMax; ++i) {
+    if (i < n_acc - 1) {
       next_state[accelDelayTapIndex(i)] = state[accelDelayTapIndex(i + 1)];
+    } else if (n_acc > 0 && i == n_acc - 1) {
+      next_state[accelDelayTapIndex(i)] = accel_cmd;
+    } else {
+      next_state[accelDelayTapIndex(i)] = 0.0F;
     }
-    next_state[accelDelayTapIndex(n_acc - 1)] = accel_cmd;
-  }
-  for (int i = n_acc; i < FirstOrderDubinsBicycleParams::kMaxInputDelaySteps; ++i) {
-    next_state[accelDelayTapIndex(i)] = 0.0F;
-  }
 
-  if (n_steer > 0) {
-    for (int i = 0; i < n_steer - 1; ++i) {
+    if (i < n_steer - 1) {
       next_state[steerDelayTapIndex(i)] = state[steerDelayTapIndex(i + 1)];
+    } else if (n_steer > 0 && i == n_steer - 1) {
+      next_state[steerDelayTapIndex(i)] = steer_cmd;
+    } else {
+      next_state[steerDelayTapIndex(i)] = 0.0F;
     }
-    next_state[steerDelayTapIndex(n_steer - 1)] = steer_cmd;
-  }
-  for (int i = n_steer; i < FirstOrderDubinsBicycleParams::kMaxInputDelaySteps; ++i) {
-    next_state[steerDelayTapIndex(i)] = 0.0F;
   }
 }
 
@@ -94,6 +97,9 @@ __host__ __device__ void firstOrderDubinsBicycleDeriv(
   state_der[static_cast<int>(S::STEER_ANGLE)] = steer_dot;
 
   // Delay taps are discrete; keep continuous ders at zero then overwrite in step().
+#ifdef __CUDA_ARCH__
+#pragma unroll
+#endif
   for (int i = 0; i < FirstOrderDubinsBicycleParams::kMaxInputDelaySteps; ++i) {
     state_der[accelDelayTapIndex(i)] = 0.0F;
     state_der[steerDelayTapIndex(i)] = 0.0F;
@@ -174,6 +180,9 @@ template <class CLASS_T, class PARAMS_T>
 __device__ void FirstOrderDubinsBicycleImpl<CLASS_T, PARAMS_T>::updateState(
   float * state, float * next_state, float * state_der, const float dt)
 {
+#ifdef __CUDA_ARCH__
+#pragma unroll
+#endif
   for (int i = threadIdx.y; i < PARENT_CLASS::STATE_DIM; i += blockDim.y) {
     next_state[i] = state[i] + state_der[i] * dt;
     if (i == static_cast<int>(S::YAW)) {

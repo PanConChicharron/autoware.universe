@@ -22,7 +22,6 @@ using mppi::cost::detail::pointInPolygon;
 using mppi::cost::detail::projectPointToPolyline;
 using mppi::cost::detail::vectorLength;
 
-/** Resolved corridor + time-aligned ref (shared theta_c on device, members on host). */
 struct CostPathBuffers
 {
   float total_path_length_s = 0.0F;
@@ -149,7 +148,6 @@ FirstOrderDubinsBicycleCostImpl<CLASS_T, NUM_TIMESTEPS, PARAMS_T, DYN_PARAMS_T>:
   FirstOrderDubinsBicycleCostImpl(cudaStream_t stream)
 {
   this->bindToStream(stream);
-  // Corridor + time-aligned ref staged into theta_c GRD; per-sample projection hint in BLK.
   this->SHARED_MEM_REQUEST_GRD_BYTES = static_cast<int>(kSharedNumFloats * sizeof(float));
   this->SHARED_MEM_REQUEST_BLK_BYTES = static_cast<int>(kSharedBlkHintFloats * sizeof(float));
 }
