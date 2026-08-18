@@ -124,8 +124,8 @@ DEFAULT_PARAMS: Dict[str, float] = {
     "track_center_coeff": 0.0,
     "corner_buffer_coeff": 0.0,
     "corner_safe_margin": 0.3,
-    "crash_coeff": 100000.0,
     "boundary_threshold": 0.8,
+    "lateral_boundary_soft_margin": 0.2,
     "boundary_threshold_left": -1.0,
     "boundary_threshold_right": -1.0,
     "lateral_acceleration_coeff": 100.0,
@@ -139,7 +139,11 @@ DEFAULT_PARAMS: Dict[str, float] = {
     "nominal_curvature_min_chord_length_m": 1.5,
     "obstacle_collision_margin": 0.2,
     "road_border_collision_margin": 0.3,
-    "drivable_area_crossing_coeff": 100.0,
+    "obstacle_safe_margin": 0.5,
+    "road_border_safe_margin": 0.3,
+    "drivable_area_safe_margin": 0.0,
+    "drivable_area_barrier_weight": 2000.0,
+    "crash_contact_penalty": 100000.0,
 }
 
 # (name, vmin, vmax) — keep in sync with DEFAULT_PARAMS keys.
@@ -167,10 +171,14 @@ SLIDER_SPECS: List[Tuple[str, float, float]] = [
     ("steer_cmd_std_dev", 0.0, 0.2),
     ("nominal_curvature_min_chord_length_m", 0.0, 5.0),
     ("boundary_threshold", 0.1, 5.0),
+    ("lateral_boundary_soft_margin", 0.0, 2.0),
     ("obstacle_collision_margin", 0.0, 2.0),
     ("road_border_collision_margin", 0.0, 2.0),
-    ("drivable_area_crossing_coeff", 0.0, 10000.0),
-    ("crash_coeff", 0.0, 500000.0),
+    ("obstacle_safe_margin", 0.0, 5.0),
+    ("road_border_safe_margin", 0.0, 5.0),
+    ("drivable_area_safe_margin", 0.0, 5.0),
+    ("drivable_area_barrier_weight", 0.0, 100000.0),
+    ("crash_contact_penalty", 1.0, 1000000.0),
 ]
 
 
@@ -1715,19 +1723,21 @@ def draw_frame(axes, frame: MppiDebugFrame) -> None:
             ("state/track", "track"),
             ("state/heading", "heading"),
             ("state/lateral_distance", "lat distance"),
+            ("state/lateral_boundary", "lat boundary"),
             ("state/lateral_yaw_error", "lat yaw error"),
             ("state/remaining_distance", "remaining dist"),
             ("state/path_overshoot", "path overshoot"),
             ("state/track_center", "track center"),
             ("state/corner_buffer", "corner buffer"),
             ("state/drivable_area", "drivable area"),
+            ("state/obstacle", "obstacle"),
+            ("state/road_border", "road border"),
             ("control/acceleration_command", "accel cmd"),
             ("control/steering_command", "steer cmd"),
             ("comfort/lateral_acceleration", "lat accel"),
             ("comfort/lateral_jerk", "lat jerk"),
             ("comfort/longitudinal_jerk", "long jerk"),
             ("comfort/steering_rate", "steer rate"),
-            ("crash", "crash"),
         )
         components = [
             (key, label, frame.cost_breakdown.get(key, 0.0))

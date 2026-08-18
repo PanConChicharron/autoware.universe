@@ -77,19 +77,21 @@ struct FirstOrderDubinsMppiCostBreakdown
   float track{0.0F};
   float heading{0.0F};
   float lateral_distance{0.0F};
+  float lateral_boundary{0.0F};
   float lateral_yaw_error{0.0F};
   float remaining_distance{0.0F};
   float path_overshoot{0.0F};
   float track_center{0.0F};
   float corner_buffer{0.0F};
   float drivable_area{0.0F};
+  float obstacle{0.0F};
+  float road_border{0.0F};
   float acceleration_command{0.0F};
   float steering_command{0.0F};
   float lateral_acceleration{0.0F};
   float lateral_jerk{0.0F};
   float longitudinal_jerk{0.0F};
   float steering_rate{0.0F};
-  float crash{0.0F};
   float running_total{0.0F};
   float terminal_total{0.0F};
   float total{0.0F};
@@ -97,10 +99,10 @@ struct FirstOrderDubinsMppiCostBreakdown
 
   [[nodiscard]] float componentTotal() const
   {
-    return speed + track + heading + lateral_distance + lateral_yaw_error + remaining_distance +
-           path_overshoot + track_center + corner_buffer + drivable_area + acceleration_command +
-           steering_command + lateral_acceleration + lateral_jerk + longitudinal_jerk +
-           steering_rate + crash;
+    return speed + track + heading + lateral_distance + lateral_boundary + lateral_yaw_error +
+           remaining_distance + path_overshoot + track_center + corner_buffer + drivable_area +
+           acceleration_command + steering_command + lateral_acceleration + lateral_jerk +
+           longitudinal_jerk + steering_rate + obstacle + road_border;
   }
 };
 
@@ -315,8 +317,9 @@ public:
    * @param steering_status Optional ego tire steering angle [rad] from vehicle status.
    * @param tracked_objects Perception tracked objects used as dynamic obstacles
    * (constant-velocity).
-   * @param road_borders Static road-border segments used as hard obstacles.
-   * @param drivable_area Static drivable-area boundary segments used as a soft constraint.
+   * @param road_borders Static road-border segments used by the gradual optimizer cost and hard
+   *        output validator.
+   * @param drivable_area Static drivable-area boundary segments used as a gradual constraint.
    */
   FirstOrderDubinsMppiOptimizationResult optimizeTrajectory(
     const Trajectory & input, const Odometry & odometry,

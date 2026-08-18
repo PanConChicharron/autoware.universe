@@ -20,6 +20,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <memory>
 #include <vector>
@@ -65,6 +66,14 @@ protected:
     params.ego_axle_to_box_center = 0.2F;
     params.obstacle_collision_margin = 0.0F;
     params.road_border_collision_margin = 0.0F;
+    params.lateral_boundary_barrier_weight =
+      params.crash_contact_penalty /
+      (params.lateral_boundary_soft_margin * params.lateral_boundary_soft_margin);
+    params.obstacle_barrier_weight =
+      params.crash_contact_penalty / (params.obstacle_safe_margin * params.obstacle_safe_margin);
+    params.road_border_barrier_weight =
+      params.crash_contact_penalty /
+      (params.road_border_safe_margin * params.road_border_safe_margin);
     return params;
   }
 
@@ -115,7 +124,7 @@ TEST_F(TrajectoryValidatorTest, ReportsRunningCostComponentsWithoutChangingTheir
   params.lateral_jerk_coeff = 0.0F;
   params.longitudinal_jerk_coeff = 0.0F;
   params.steer_time_constant = 0.1F;
-  params.drivable_area_crossing_coeff = 0.0F;
+  params.drivable_area_barrier_weight = 0.0F;
   cost_->setParams(params);
   setStraightReference();
 
@@ -140,6 +149,211 @@ TEST_F(TrajectoryValidatorTest, ReportsRunningCostComponentsWithoutChangingTheir
   EXPECT_NEAR(breakdown.total, direct_total, 1.0E-5F);
   EXPECT_EQ(crash_status, 0);
   EXPECT_EQ(direct_crash_status, 0);
+}
+
+TEST_F(TrajectoryValidatorTest, SmoothBarrierCostRampsUpQuadratically)
+{
+  constexpr float safe_margin = 1.0F;
+  constexpr float precomputed_weight = 2000.0F;
+
+  EXPECT_FLOAT_EQ(computeSmoothBarrierCost(safe_margin, safe_margin, precomputed_weight), 0.0F);
+  EXPECT_FLOAT_EQ(
+    computeSmoothBarrierCost(safe_margin - 0.5F, safe_margin, precomputed_weight),
+    precomputed_weight * 0.25F);
+
+  auto params = makeParams();
+  params.obstacle_safe_margin = safe_margin;
+  params.obstacle_barrier_weight = precomputed_weight;
+  cost_->setParams(params);
+  setStraightReference();
+  constexpr float obstacle_y = 0.0F;
+  constexpr float obstacle_yaw = 0.0F;
+  constexpr float obstacle_half_length = 0.1F;
+  constexpr float obstacle_half_width = 0.1F;
+  float obstacle_x = 1.7125F;  // Exactly 1.0 m beyond the ego front contour.
+  cost_->setOrientedBoxObstacles(
+    &obstacle_x, &obstacle_y, &obstacle_yaw, &obstacle_half_length, &obstacle_half_width, 1);
+
+  TestCost::output_array output = TestCost::output_array::Zero();
+  output(static_cast<int>(OutputIndex::TOTAL_VELOCITY)) = 2.0F;
+  TestCost::control_array control = TestCost::control_array::Zero();
+  int crash_status = 0;
+  EXPECT_NEAR(
+    cost_->computeRunningCostBreakdown(output, control, 0, &crash_status).obstacle, 0.0F, 1.0E-5F);
+
+  obstacle_x = 1.2125F;  // Clearance is 0.5 m, so margin violation is exactly 0.5 m.
+  cost_->setOrientedBoxObstacles(
+    &obstacle_x, &obstacle_y, &obstacle_yaw, &obstacle_half_length, &obstacle_half_width, 1);
+  EXPECT_NEAR(
+    cost_->computeRunningCostBreakdown(output, control, 0, &crash_status).obstacle,
+    precomputed_weight * 0.25F, 1.0E-3F);
+}
+
+TEST_F(TrajectoryValidatorTest, LateralBoundaryBarrierActivatesInsideThreshold)
+{
+  auto params = makeParams();
+  params.speed_coeff = 0.0F;
+  params.track_coeff = 0.0F;
+  params.heading_coeff = 0.0F;
+  params.lateral_distance_coeff = 0.0F;
+  params.lateral_yaw_error_coeff = 0.0F;
+  params.remaining_distance_coeff = 0.0F;
+  params.path_overshoot_coeff = 0.0F;
+  params.track_center_coeff = 0.0F;
+  params.corner_buffer_coeff = 0.0F;
+  params.accel_cmd_coeff = 0.0F;
+  params.steer_cmd_coeff = 0.0F;
+  params.steer_rate_coeff = 0.0F;
+  params.lateral_acceleration_coeff = 0.0F;
+  params.lateral_jerk_coeff = 0.0F;
+  params.longitudinal_jerk_coeff = 0.0F;
+  params.drivable_area_barrier_weight = 0.0F;
+  params.obstacle_barrier_weight = 0.0F;
+  params.road_border_barrier_weight = 0.0F;
+  params.boundary_threshold = 0.8F;
+  params.lateral_boundary_soft_margin = 0.2F;
+  params.crash_contact_penalty = 100000.0F;
+  params.lateral_boundary_barrier_weight =
+    params.crash_contact_penalty /
+    (params.lateral_boundary_soft_margin * params.lateral_boundary_soft_margin);
+  cost_->setParams(params);
+  setStraightReference();
+
+  TestCost::output_array output = TestCost::output_array::Zero();
+  TestCost::control_array control = TestCost::control_array::Zero();
+  int crash_status = 0;
+
+  output(static_cast<int>(OutputIndex::BASELINK_POS_I_Y)) = 0.5F;
+  EXPECT_FLOAT_EQ(
+    cost_->computeRunningCostBreakdown(output, control, 0, &crash_status).lateral_boundary, 0.0F);
+
+  output(static_cast<int>(OutputIndex::BASELINK_POS_I_Y)) = 0.7F;
+  const auto inside = cost_->computeRunningCostBreakdown(output, control, 0, &crash_status);
+  EXPECT_NEAR(inside.lateral_boundary, 25000.0F, 1.0F);
+  EXPECT_NEAR(inside.total, inside.lateral_boundary, 1.0E-3F);
+
+  output(static_cast<int>(OutputIndex::BASELINK_POS_I_Y)) = 0.8F;
+  EXPECT_NEAR(
+    cost_->computeRunningCostBreakdown(output, control, 0, &crash_status).lateral_boundary,
+    params.crash_contact_penalty, 1.0F);
+}
+
+TEST_F(TrajectoryValidatorTest, SmoothBarrierCostGrowsBeyondContactPenaltyForPenetration)
+{
+  constexpr float safe_margin = 0.5F;
+  constexpr float nominal_contact_penalty = 100000.0F;
+  constexpr float precomputed_weight = nominal_contact_penalty / (safe_margin * safe_margin);
+  const float contact_cost = computeSmoothBarrierCost(0.0F, safe_margin, precomputed_weight);
+  const float deep_penetration_cost =
+    computeSmoothBarrierCost(-10.0F, safe_margin, precomputed_weight);
+
+  EXPECT_FLOAT_EQ(contact_cost, nominal_contact_penalty);
+  EXPECT_GT(deep_penetration_cost, nominal_contact_penalty);
+  EXPECT_TRUE(std::isfinite(deep_penetration_cost));
+
+  auto params = makeParams();
+  params.obstacle_safe_margin = safe_margin;
+  params.obstacle_barrier_weight = precomputed_weight;
+  params.crash_contact_penalty = nominal_contact_penalty;
+  cost_->setParams(params);
+  setStraightReference();
+  constexpr float obstacle_x = 0.2F;
+  constexpr float obstacle_y = 0.0F;
+  constexpr float obstacle_yaw = 0.0F;
+  constexpr float obstacle_half_length = 20.0F;
+  constexpr float obstacle_half_width = 20.0F;
+  cost_->setOrientedBoxObstacles(
+    &obstacle_x, &obstacle_y, &obstacle_yaw, &obstacle_half_length, &obstacle_half_width, 1);
+
+  EXPECT_LT(cost_->distanceToClosestObstacle(0.0F, 0.0F, 0.0F, 0), -10.0F);
+  TestCost::output_array output = TestCost::output_array::Zero();
+  output(static_cast<int>(OutputIndex::TOTAL_VELOCITY)) = 2.0F;
+  TestCost::control_array control = TestCost::control_array::Zero();
+  int crash_status = 0;
+  const auto breakdown = cost_->computeRunningCostBreakdown(output, control, 0, &crash_status);
+  EXPECT_GT(breakdown.obstacle, nominal_contact_penalty);
+  EXPECT_TRUE(std::isfinite(breakdown.total));
+}
+
+TEST_F(TrajectoryValidatorTest, ExcludesMovingObjectsFromGradualObstacleCost)
+{
+  auto params = makeParams();
+  params.obstacle_safe_margin = 0.5F;
+  params.obstacle_barrier_weight = 2000.0F;
+  cost_->setParams(params);
+  setStraightReference();
+
+  std::array<float, kTestHorizon> obstacle_x{};
+  std::array<float, kTestHorizon> obstacle_y{};
+  std::array<float, kTestHorizon> obstacle_yaw{};
+  for (int t = 0; t < kTestHorizon; ++t) {
+    obstacle_x[static_cast<size_t>(t)] = 0.2F + 0.1F * static_cast<float>(t);
+  }
+  constexpr float obstacle_half_length = 0.1F;
+  constexpr float obstacle_half_width = 0.1F;
+  cost_->setOrientedBoxObstacleTrajectories(
+    obstacle_x.data(), obstacle_y.data(), obstacle_yaw.data(), &obstacle_half_length,
+    &obstacle_half_width, 1, kTestHorizon);
+
+  // Moving objects remain available to the hard output validator.
+  EXPECT_TRUE(cost_->egoIntersectsObstacleAtStep(0.0F, 0.0F, 0.0F, 0));
+
+  TestCost::output_array output = TestCost::output_array::Zero();
+  TestCost::control_array control = TestCost::control_array::Zero();
+  int crash_status = 0;
+  const auto breakdown = cost_->computeRunningCostBreakdown(output, control, 0, &crash_status);
+  EXPECT_FLOAT_EQ(breakdown.obstacle, 0.0F);
+}
+
+TEST_F(TrajectoryValidatorTest, GradualConstraintCostsAreIncludedInBreakdownTotal)
+{
+  auto params = makeParams();
+  params.speed_coeff = 0.0F;
+  params.track_coeff = 0.0F;
+  params.heading_coeff = 0.0F;
+  params.track_center_coeff = 0.0F;
+  params.corner_buffer_coeff = 0.0F;
+  params.accel_cmd_coeff = 0.0F;
+  params.steer_cmd_coeff = 0.0F;
+  params.steer_rate_coeff = 0.0F;
+  params.lateral_acceleration_coeff = 0.0F;
+  params.lateral_jerk_coeff = 0.0F;
+  params.longitudinal_jerk_coeff = 0.0F;
+  params.obstacle_safe_margin = 0.5F;
+  params.obstacle_barrier_weight = 2000.0F;
+  params.road_border_safe_margin = 0.3F;
+  params.road_border_barrier_weight = 2000.0F;
+  params.drivable_area_safe_margin = 0.0F;
+  params.drivable_area_barrier_weight = 2000.0F;
+  params.crash_contact_penalty = 100000.0F;
+  cost_->setParams(params);
+  setStraightReference();
+
+  constexpr float obstacle_x = 0.2F;
+  constexpr float obstacle_y = 0.0F;
+  constexpr float obstacle_yaw = 0.0F;
+  constexpr float obstacle_half_length = 0.1F;
+  constexpr float obstacle_half_width = 0.1F;
+  cost_->setOrientedBoxObstacles(
+    &obstacle_x, &obstacle_y, &obstacle_yaw, &obstacle_half_length, &obstacle_half_width, 1);
+  cost_->setRoadBorderSegments({Segment{-2.0F, 0.4F, 2.0F, 0.4F}});
+  cost_->setDrivableAreaSegments({Segment{-2.0F, 0.0F, 2.0F, 0.0F}});
+
+  TestCost::output_array output = TestCost::output_array::Zero();
+  output(static_cast<int>(OutputIndex::TOTAL_VELOCITY)) = 2.0F;
+  TestCost::control_array control = TestCost::control_array::Zero();
+  int crash_status = 0;
+
+  const auto breakdown = cost_->computeRunningCostBreakdown(output, control, 0, &crash_status);
+  const float gradual_cost_sum =
+    breakdown.drivable_area + breakdown.obstacle + breakdown.road_border;
+
+  EXPECT_GT(breakdown.drivable_area, 0.0F);
+  EXPECT_GT(breakdown.obstacle, 0.0F);
+  EXPECT_GT(breakdown.road_border, 0.0F);
+  EXPECT_NEAR(breakdown.total, gradual_cost_sum, 1.0E-4F);
+  EXPECT_NEAR(breakdown.componentTotal(), breakdown.total, 1.0E-4F);
+  EXPECT_EQ(crash_status, 0);
 }
 
 TEST_F(TrajectoryValidatorTest, AppliesBoundaryThresholdSymmetricallyAndInclusively)

@@ -153,10 +153,10 @@ void applyCostParam(
     params.corner_buffer_coeff = value;
   } else if (key == "corner_safe_margin") {
     params.corner_safe_margin = value;
-  } else if (key == "crash_coeff") {
-    params.crash_coeff = value;
   } else if (key == "boundary_threshold") {
     params.boundary_threshold = value;
+  } else if (key == "lateral_boundary_soft_margin") {
+    params.lateral_boundary_soft_margin = value;
   } else if (key == "accel_cmd_coeff") {
     params.accel_cmd_coeff = value;
   } else if (key == "steer_cmd_coeff") {
@@ -179,8 +179,16 @@ void applyCostParam(
     params.obstacle_collision_margin = value;
   } else if (key == "road_border_collision_margin") {
     params.road_border_collision_margin = value;
-  } else if (key == "drivable_area_crossing_coeff") {
-    params.drivable_area_crossing_coeff = value;
+  } else if (key == "obstacle_safe_margin") {
+    params.obstacle_safe_margin = value;
+  } else if (key == "road_border_safe_margin") {
+    params.road_border_safe_margin = value;
+  } else if (key == "drivable_area_safe_margin") {
+    params.drivable_area_safe_margin = value;
+  } else if (key == "drivable_area_barrier_weight") {
+    params.drivable_area_barrier_weight = value;
+  } else if (key == "crash_contact_penalty") {
+    params.crash_contact_penalty = value;
   } else {
     // Unknown keys must not abort retune: the visualizer may send a superset of
     // slider names / logged fields that older or newer builds don't share.
@@ -748,19 +756,21 @@ int run(int argc, char ** argv)
       breakdown_out << "state/track," << breakdown.track << "\n";
       breakdown_out << "state/heading," << breakdown.heading << "\n";
       breakdown_out << "state/lateral_distance," << breakdown.lateral_distance << "\n";
+      breakdown_out << "state/lateral_boundary," << breakdown.lateral_boundary << "\n";
       breakdown_out << "state/lateral_yaw_error," << breakdown.lateral_yaw_error << "\n";
       breakdown_out << "state/remaining_distance," << breakdown.remaining_distance << "\n";
       breakdown_out << "state/path_overshoot," << breakdown.path_overshoot << "\n";
       breakdown_out << "state/track_center," << breakdown.track_center << "\n";
       breakdown_out << "state/corner_buffer," << breakdown.corner_buffer << "\n";
       breakdown_out << "state/drivable_area," << breakdown.drivable_area << "\n";
+      breakdown_out << "state/obstacle," << breakdown.obstacle << "\n";
+      breakdown_out << "state/road_border," << breakdown.road_border << "\n";
       breakdown_out << "control/acceleration_command," << breakdown.acceleration_command << "\n";
       breakdown_out << "control/steering_command," << breakdown.steering_command << "\n";
       breakdown_out << "comfort/lateral_acceleration," << breakdown.lateral_acceleration << "\n";
       breakdown_out << "comfort/lateral_jerk," << breakdown.lateral_jerk << "\n";
       breakdown_out << "comfort/longitudinal_jerk," << breakdown.longitudinal_jerk << "\n";
       breakdown_out << "comfort/steering_rate," << breakdown.steering_rate << "\n";
-      breakdown_out << "crash," << breakdown.crash << "\n";
     }
 
     index_out << frame_id << "," << reference.header.stamp.sec << ","
