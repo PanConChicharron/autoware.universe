@@ -126,31 +126,30 @@ void scaleCostBreakdown(CostBreakdown & breakdown, const float scale)
   }
 }
 
-CostBreakdown reconstructSelectedTrajectoryCost(
-  const COST & cost, DYN & model, const Mppi::state_trajectory & states,
+CostBreakdown reconstructControlTrajectoryCost(
+  const COST & cost, DYN & model, const DYN::state_array & initial_state,
   const Mppi::control_trajectory & controls)
 {
   CostBreakdown result;
-  const int horizon =
-    std::min({kMppiHorizon, static_cast<int>(states.cols()), static_cast<int>(controls.cols())});
+  const int horizon = std::min(kMppiHorizon, static_cast<int>(controls.cols()));
   if (horizon <= 0) {
     return result;
   }
 
   int crash_status = 0;
+  DYN::state_array state = initial_state;
   DYN::state_array next_state = DYN::state_array::Zero();
   DYN::state_array state_derivative = DYN::state_array::Zero();
   DYN::output_array output = DYN::output_array::Zero();
   for (int timestep = 0; timestep < horizon; ++timestep) {
-    // Replay the same post-step output used by the GPU rollout. getActualStateSeq() stores
-    // x[0]..x[H-1], so stepping x[t] with u[t] is also required to reconstruct x[H].
-    DYN::state_array state = states.col(timestep);
+    // Replay the same constrained, post-step outputs used by the GPU rollout, including x[H].
     DYN::control_array control = controls.col(timestep);
     model.enforceConstraints(state, control);
     model.step(
       state, next_state, state_derivative, control, output, static_cast<float>(timestep), kDt);
     accumulateCostBreakdown(
       result, cost.computeRunningCostBreakdown(output, control, timestep, &crash_status));
+    state = next_state;
   }
 
   // The GPU applies terminalCost() to the final post-step output and divides both running and
@@ -161,6 +160,23 @@ CostBreakdown reconstructSelectedTrajectoryCost(
   scaleCostBreakdown(result, 1.0F / static_cast<float>(horizon));
   result.evaluated_timesteps = static_cast<std::size_t>(horizon);
   return result;
+}
+
+Mppi::control_trajectory makeNominalControlTrajectory(
+  const std::vector<float> & acceleration_commands, const std::vector<float> & steering_commands)
+{
+  Mppi::control_trajectory controls = Mppi::control_trajectory::Zero();
+  const int horizon = std::min(
+    {kMppiHorizon, static_cast<int>(acceleration_commands.size()),
+     static_cast<int>(steering_commands.size())});
+  const int accel_idx =
+    static_cast<int>(FirstOrderDubinsBicycleParams::ControlIndex::ACCELERATION_CMD);
+  const int steer_idx = static_cast<int>(FirstOrderDubinsBicycleParams::ControlIndex::STEER_CMD);
+  for (int timestep = 0; timestep < horizon; ++timestep) {
+    controls(accel_idx, timestep) = acceleration_commands[static_cast<std::size_t>(timestep)];
+    controls(steer_idx, timestep) = steering_commands[static_cast<std::size_t>(timestep)];
+  }
+  return controls;
 }
 
 std::string formatCostBreakdown(const CostBreakdown & cost)
@@ -637,6 +653,7 @@ struct FirstOrderDubinsMppiInterface::Impl
   bool ignore_drivable_area{false};
   bool force_cold_start_each_step{false};
   bool skip_if_invalid{false};
+  float min_optimization_length{0.0F};
   /** Warm-start u_nom from shifted previous u_opt when available. */
   bool use_last_control_as_nominal{false};
   /** Cold-seed u_nom from acados temporal MPT instead of geometric diffusion seed. */
@@ -744,8 +761,8 @@ struct FirstOrderDubinsMppiInterface::Impl
     // Power-law PSD exponents (0 = white, 1 = pink, 2 = brown). Pink steer keeps lateral
     // reach while cutting high-frequency δ_cmd chatter from i.i.d. Gaussian samples.
     sp.exponents[static_cast<int>(FirstOrderDubinsBicycleParams::ControlIndex::ACCELERATION_CMD)] =
-      0.5F;
-    sp.exponents[static_cast<int>(FirstOrderDubinsBicycleParams::ControlIndex::STEER_CMD)] = 2.0F;
+      1.0F;
+    sp.exponents[static_cast<int>(FirstOrderDubinsBicycleParams::ControlIndex::STEER_CMD)] = 1.0F;
 #elif defined(USE_SMOOTH_MPPI)
     // Smooth-MPPI samples action derivatives and integrates with dt.
     sp.dt = kDt;
@@ -1358,6 +1375,9 @@ void FirstOrderDubinsMppiInterface::setCostParams(const FirstOrderDubinsMppiCost
 void FirstOrderDubinsMppiInterface::setRuntimeOptions(
   const FirstOrderDubinsMppiRuntimeOptions & options)
 {
+  if (!impl_) {
+    throw std::runtime_error("FirstOrderDubinsMppiInterface implementation is missing");
+  }
   setDebugTrajectoryLogging(
     options.enable_debug_trajectory_log, options.debug_trajectory_log_directory);
   setAblationOptions(
@@ -1368,6 +1388,7 @@ void FirstOrderDubinsMppiInterface::setRuntimeOptions(
   }
   impl_->use_temporal_mpt_as_nominal = options.use_temporal_mpt_as_nominal;
   impl_->enable_input_delay_compensation = options.enable_input_delay_compensation;
+  impl_->min_optimization_length = options.min_optimization_length;
   if (impl_->initialized) {
     impl_->syncDelayStepsToModel();
     if (!impl_->enable_input_delay_compensation) {
@@ -1418,6 +1439,7 @@ void FirstOrderDubinsMppiInterface::setAblationOptions(
   runtime.ignore_drivable_area = ignore_drivable_area;
   runtime.force_cold_start_each_step = force_cold_start_each_step;
   runtime.skip_if_invalid = skip_if_invalid;
+  runtime.min_optimization_length = impl_->min_optimization_length;
   runtime.use_last_control_as_nominal = use_last_control_as_nominal;
   runtime.use_temporal_mpt_as_nominal = impl_->use_temporal_mpt_as_nominal;
   runtime.enable_input_delay_compensation = impl_->enable_input_delay_compensation;
@@ -1557,7 +1579,8 @@ FirstOrderDubinsMppiOptimizationResult FirstOrderDubinsMppiInterface::optimizeTr
   }
   FirstOrderDubinsMppiOptimizationResult result;
   const auto not_enough_input_points = input.points.size() < 2U;
-  const auto optimization_required = detail::isOptimizationRequired(input);
+  const auto optimization_required =
+    detail::isOptimizationRequired(input, impl_->min_optimization_length);
   if (not_enough_input_points || !optimization_required) {
     RCLCPP_WARN(
       mppiLogger(), "MPPI skipped: %s",
@@ -1698,7 +1721,11 @@ FirstOrderDubinsMppiOptimizationResult FirstOrderDubinsMppiInterface::optimizeTr
   }
   if (n_state > 0 && n_ctrl > 0) {
     result.debug.cost_breakdown =
-      reconstructSelectedTrajectoryCost(impl_->cost, impl_->model, state_trajectory, u_opt_traj);
+      reconstructControlTrajectoryCost(impl_->cost, impl_->model, x_at_optimization, u_opt_traj);
+    const auto nominal_controls =
+      makeNominalControlTrajectory(impl_->logged_nominal_accel, impl_->logged_nominal_steer);
+    result.debug.nominal_cost_breakdown = reconstructControlTrajectoryCost(
+      impl_->cost, impl_->model, x_at_optimization, nominal_controls);
   }
 
   MppiDebugEgoState ego;
@@ -1716,6 +1743,7 @@ FirstOrderDubinsMppiOptimizationResult FirstOrderDubinsMppiInterface::optimizeTr
     runtime.ignore_drivable_area = impl_->ignore_drivable_area;
     runtime.force_cold_start_each_step = impl_->force_cold_start_each_step;
     runtime.skip_if_invalid = impl_->skip_if_invalid;
+    runtime.min_optimization_length = impl_->min_optimization_length;
     runtime.use_last_control_as_nominal = impl_->use_last_control_as_nominal;
     runtime.use_temporal_mpt_as_nominal = impl_->use_temporal_mpt_as_nominal;
     runtime.enable_input_delay_compensation = impl_->enable_input_delay_compensation;
