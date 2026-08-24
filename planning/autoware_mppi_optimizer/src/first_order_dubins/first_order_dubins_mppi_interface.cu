@@ -20,7 +20,6 @@
 #include "autoware/mppi_optimizer/mppi_debug_trajectory_logger.hpp"
 #include "autoware/mppi_optimizer/tracked_objects_obstacles.hpp"
 
-#include <mppi/controllers/MPPI/mppi_controller.cuh>
 #include <mppi/cost_functions/dubins/first_order_dubins_bicycle_cost.cuh>
 #include <mppi/cost_functions/dubins/first_order_dubins_bicycle_cost_bridge.hpp>
 #include <mppi/cost_functions/moving_car_obstacles.hpp>
@@ -52,6 +51,57 @@
 #include <utility>
 #include <vector>
 
+// Select exactly one MPPI controller backend (default: vanilla).
+// #define USE_VANILLA_MPPI
+// #define USE_TUBE_MPPI
+// #define USE_ROBUST_MPPI
+#define USE_COLORED_MPPI
+// #define USE_PRIMITIVES_MPPI
+
+#if defined(USE_VANILLA_MPPI) && defined(USE_TUBE_MPPI)
+#error "Define at most one MPPI controller backend"
+#endif
+#if defined(USE_VANILLA_MPPI) && defined(USE_ROBUST_MPPI)
+#error "Define at most one MPPI controller backend"
+#endif
+#if defined(USE_VANILLA_MPPI) && defined(USE_COLORED_MPPI)
+#error "Define at most one MPPI controller backend"
+#endif
+#if defined(USE_VANILLA_MPPI) && defined(USE_PRIMITIVES_MPPI)
+#error "Define at most one MPPI controller backend"
+#endif
+#if defined(USE_TUBE_MPPI) && defined(USE_ROBUST_MPPI)
+#error "Define at most one MPPI controller backend"
+#endif
+#if defined(USE_TUBE_MPPI) && defined(USE_COLORED_MPPI)
+#error "Define at most one MPPI controller backend"
+#endif
+#if defined(USE_TUBE_MPPI) && defined(USE_PRIMITIVES_MPPI)
+#error "Define at most one MPPI controller backend"
+#endif
+#if defined(USE_ROBUST_MPPI) && defined(USE_COLORED_MPPI)
+#error "Define at most one MPPI controller backend"
+#endif
+#if defined(USE_ROBUST_MPPI) && defined(USE_PRIMITIVES_MPPI)
+#error "Define at most one MPPI controller backend"
+#endif
+#if defined(USE_COLORED_MPPI) && defined(USE_PRIMITIVES_MPPI)
+#error "Define at most one MPPI controller backend"
+#endif
+
+#if defined(USE_VANILLA_MPPI) || !(defined(USE_TUBE_MPPI) || defined(USE_ROBUST_MPPI) || \
+                                   defined(USE_COLORED_MPPI) || defined(USE_PRIMITIVES_MPPI))
+#include <mppi/controllers/MPPI/mppi_controller.cuh>
+#elif defined(USE_TUBE_MPPI)
+#include <mppi/controllers/Tube-MPPI/tube_mppi_controller.cuh>
+#elif defined(USE_ROBUST_MPPI)
+#include <mppi/controllers/R-MPPI/robust_mppi_controller.cuh>
+#elif defined(USE_COLORED_MPPI)
+#include <mppi/controllers/ColoredMPPI/colored_mppi_controller.cuh>
+#elif defined(USE_PRIMITIVES_MPPI)
+#include <mppi/controllers/Primitives/primitives_controller.cuh>
+#endif
+
 namespace autoware::mppi_optimizer
 {
 namespace
@@ -73,6 +123,7 @@ rclcpp::Logger mppiLogger()
 using DYN = FirstOrderDubinsBicycle;
 using COST = FirstOrderDubinsBicycleCost<kRefHorizon>;
 using FB = ZeroFeedback<DYN, kMppiHorizon>;
+using CostBreakdown = FirstOrderDubinsMppiCostBreakdown;
 
 #define USE_COLOURED_NOISE
 
@@ -84,8 +135,21 @@ using SAMPLER = mppi::sampling_distributions::SmoothMPPIDistribution<DYN::DYN_PA
 using SAMPLER = mppi::sampling_distributions::GaussianDistribution<DYN::DYN_PARAMS_T>;
 #endif
 
+#if defined(USE_VANILLA_MPPI) || !(defined(USE_TUBE_MPPI) || defined(USE_ROBUST_MPPI) || \
+                                   defined(USE_COLORED_MPPI) || defined(USE_PRIMITIVES_MPPI))
 using Mppi = VanillaMPPIController<DYN, COST, FB, kMppiHorizon, kNumRollouts, SAMPLER>;
-using CostBreakdown = FirstOrderDubinsMppiCostBreakdown;
+#elif defined(USE_TUBE_MPPI)
+using Mppi = TubeMPPIController<DYN, COST, FB, kMppiHorizon, kNumRollouts, SAMPLER>;
+#elif defined(USE_ROBUST_MPPI)
+using Mppi = RobustMPPIController<DYN, COST, FB, kMppiHorizon, kNumRollouts, SAMPLER>;
+#elif defined(USE_COLORED_MPPI)
+using Mppi = ColoredMPPIController<DYN, COST, FB, kMppiHorizon, kNumRollouts, SAMPLER>;
+#elif defined(USE_PRIMITIVES_MPPI)
+constexpr int kMppiBlockDimX = 32;
+constexpr int kMppiBlockDimY = 2;
+using Mppi =
+  PrimitivesController<DYN, COST, FB, kMppiHorizon, kNumRollouts, kMppiBlockDimX, kMppiBlockDimY>;
+#endif
 
 constexpr std::array<float CostBreakdown::*, 22> kCostBreakdownFields = {
   &CostBreakdown::speed,
@@ -198,6 +262,27 @@ std::string formatCostBreakdown(const CostBreakdown & cost)
          << ", longitudinal_jerk=" << cost.longitudinal_jerk
          << ", steer_rate=" << cost.steering_rate << '}';
   return stream.str();
+}
+
+/** N_eff = 1 / Σ w_i² for normalized importance weights (Kish's ESS). */
+float computeEffectiveSampleSize(const Mppi & controller, int * num_rollouts_out = nullptr)
+{
+  // Take by value: nvcc has broken lifetime extension for Eigen return temporaries.
+  const Mppi::sampled_cost_traj importance = controller.getSampledCostSeq();
+  const int num_rollouts = static_cast<int>(importance.size());
+  if (num_rollouts_out != nullptr) {
+    *num_rollouts_out = num_rollouts;
+  }
+  const float normalizer = controller.getNormalizerCost();
+  if (normalizer <= 0.0F || num_rollouts == 0) {
+    return 0.0F;
+  }
+  float sum_sq = 0.0F;
+  for (int i = 0; i < num_rollouts; ++i) {
+    const float w = importance(i) / normalizer;
+    sum_sq += w * w;
+  }
+  return (sum_sq > 0.0F) ? (1.0F / sum_sq) : 0.0F;
 }
 
 /** Expose vendor Savitzky–Golay control_history_ for offline retune parity. */
@@ -765,21 +850,33 @@ struct FirstOrderDubinsMppiInterface::Impl
       user_cost_params_.accel_cmd_std_dev;
     sp.std_dev[static_cast<int>(FirstOrderDubinsBicycleParams::ControlIndex::STEER_CMD)] =
       user_cost_params_.steer_cmd_std_dev;
+    sp.std_dev_decay = user_cost_params_.std_dev_decay;
     sp.sum_strides = std::max(32, (kNumRollouts + 1023) / 1024);
 #ifdef USE_COLOURED_NOISE
     sp.exponents[static_cast<int>(FirstOrderDubinsBicycleParams::ControlIndex::ACCELERATION_CMD)] =
       user_cost_params_.accel_cmd_noise_exponent;
     sp.exponents[static_cast<int>(FirstOrderDubinsBicycleParams::ControlIndex::STEER_CMD)] =
       user_cost_params_.steer_cmd_noise_exponent;
+    sp.offset_decay_rate = user_cost_params_.offset_decay_rate;
 #elif defined(USE_SMOOTH_MPPI)
     // Smooth-MPPI samples action derivatives and integrates with dt.
     sp.dt = kDt;
 #endif
-    sampler = SAMPLER(sp);
-
     const float lambda = user_cost_params_.lambda;
+    const int accel_idx =
+      static_cast<int>(FirstOrderDubinsBicycleParams::ControlIndex::ACCELERATION_CMD);
+    const int steer_idx = static_cast<int>(FirstOrderDubinsBicycleParams::ControlIndex::STEER_CMD);
+#if defined(USE_PRIMITIVES_MPPI)
+    Mppi::control_array control_std_dev = Mppi::control_array::Zero();
+    control_std_dev(accel_idx) = user_cost_params_.accel_cmd_std_dev;
+    control_std_dev(steer_idx) = user_cost_params_.steer_cmd_std_dev;
+    controller = std::make_unique<MppiWithHistoryAccess>(
+      &model, &cost, &feedback, kDt, kMaxIter, lambda, 0.0F, control_std_dev, kMppiHorizon, u_nom);
+#else
+    sampler = SAMPLER(sp);
     controller = std::make_unique<MppiWithHistoryAccess>(
       &model, &cost, &feedback, &sampler, kDt, kMaxIter, lambda, 0.0F, kMppiHorizon, u_nom);
+#endif
     auto cp = controller->getParams();
     cp.lambda_ = lambda;
     cp.dynamics_rollout_dim_ = dim3(32, 2, 1);
@@ -795,9 +892,10 @@ struct FirstOrderDubinsMppiInterface::Impl
     tracking_start_idx = 0U;
     sim_time = 0.0F;
 
+    const std::string controller_name = controller->getControllerName();
     RCLCPP_INFO(
       mppiLogger(),
-      "MPPI GPU initialized (horizon=%d, rollouts=%d, dt=%.2f, lambda=%.1f, "
+      "MPPI GPU initialized (controller=%s, horizon=%d, rollouts=%d, dt=%.2f, lambda=%.1f, "
       "wheel_base=%.2f, max_steer=%.2f, accel_std=%.3f, steer_std=%.3f, acc_tau=%.2f, "
       "steer_tau=%.2f, "
       "acc_delay=%.3f (%d steps), steer_delay=%.3f (%d steps), "
@@ -805,19 +903,19 @@ struct FirstOrderDubinsMppiInterface::Impl
       "boundary_threshold=%.2f, obs_margin=%.2f, road_border_margin=%.2f, "
       "lateral_barrier=%.2f@%.2f, obs_barrier=%.2f@%.2f, road_barrier=%.2f@%.2f, "
       "drive_barrier=%.2f@%.2f, crash_contact_penalty=%.2f)",
-      kMppiHorizon, kNumRollouts, kDt, user_cost_params_.lambda, vehicle_params.wheel_base,
-      vehicle_params.max_steer_angle, user_cost_params_.accel_cmd_std_dev,
-      user_cost_params_.steer_cmd_std_dev, vehicle_params.acc_time_constant,
-      vehicle_params.steer_time_constant, vehicle_params.acc_time_delay, acc_delay_steps,
-      vehicle_params.steer_time_delay, steer_delay_steps, vehicle_params.steer_rate_lim,
-      vehicle_params.vel_rate_lim, vehicle_params.ego_length, vehicle_params.ego_width,
-      vehicle_params.ego_axle_to_box_center, cost_params.boundary_threshold,
-      cost_params.obstacle_collision_margin, cost_params.road_border_collision_margin,
-      cost_params.lateral_boundary_barrier_weight, cost_params.lateral_boundary_soft_margin,
-      cost_params.obstacle_barrier_weight, cost_params.obstacle_safe_margin,
-      cost_params.road_border_barrier_weight, cost_params.road_border_safe_margin,
-      cost_params.drivable_area_barrier_weight, cost_params.drivable_area_safe_margin,
-      cost_params.crash_contact_penalty);
+      controller_name.c_str(), kMppiHorizon, kNumRollouts, kDt, user_cost_params_.lambda,
+      vehicle_params.wheel_base, vehicle_params.max_steer_angle,
+      user_cost_params_.accel_cmd_std_dev, user_cost_params_.steer_cmd_std_dev,
+      vehicle_params.acc_time_constant, vehicle_params.steer_time_constant,
+      vehicle_params.acc_time_delay, acc_delay_steps, vehicle_params.steer_time_delay,
+      steer_delay_steps, vehicle_params.steer_rate_lim, vehicle_params.vel_rate_lim,
+      vehicle_params.ego_length, vehicle_params.ego_width, vehicle_params.ego_axle_to_box_center,
+      cost_params.boundary_threshold, cost_params.obstacle_collision_margin,
+      cost_params.road_border_collision_margin, cost_params.lateral_boundary_barrier_weight,
+      cost_params.lateral_boundary_soft_margin, cost_params.obstacle_barrier_weight,
+      cost_params.obstacle_safe_margin, cost_params.road_border_barrier_weight,
+      cost_params.road_border_safe_margin, cost_params.drivable_area_barrier_weight,
+      cost_params.drivable_area_safe_margin, cost_params.crash_contact_penalty);
   }
 
   void resetTrackingState()
@@ -1810,6 +1908,8 @@ FirstOrderDubinsMppiOptimizationResult FirstOrderDubinsMppiInterface::optimizeTr
 
   const auto validation_reasons = to_string(result.debug.validation.reasons);
   const auto cost_breakdown = formatCostBreakdown(result.debug.cost_breakdown);
+  int num_rollouts_total = 0;
+  const float ess = computeEffectiveSampleSize(*impl_->controller, &num_rollouts_total);
   result.debug.timing.total_ms =
     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start_time)
       .count();
@@ -1818,13 +1918,14 @@ FirstOrderDubinsMppiOptimizationResult FirstOrderDubinsMppiInterface::optimizeTr
     "MPPI tracked diffusion ref in %.1f ms (seed_nominal=%.1f): start_idx=%zu steps=%d "
     "output points size=%zu points=%zu rollouts=%zu "
     "obstacles=%zu road_borders=%zu drivable_segments=%zu u_accel=%.3f u_steer=%.3f "
-    "best_sample_cost=%.2f selected_cost=%s validity=%s max_pos_err=%.3f m "
-    "max_vel_err=%.3f m/s",
+    "best_sample_cost=%.2f selected_cost=%s N_eff=%.1f (%.2f%% of %d) validity=%s "
+    "max_pos_err=%.3f m max_vel_err=%.3f m/s",
     result.debug.timing.total_ms, result.debug.timing.seed_nominal_ms, impl_->tracking_start_idx,
     impl_->step_count, output.points.size(), num_points, result.debug.rollouts.size(),
     tracked_objects.objects.size(), road_borders.size(), drivable_area.size(), control.accel_cmd,
-    control.steer_cmd, result.debug.baseline_cost, cost_breakdown.c_str(),
-    validation_reasons.c_str(), max_pos_delta, max_vel_delta);
+    control.steer_cmd, result.debug.baseline_cost, cost_breakdown.c_str(), ess,
+    (num_rollouts_total > 0) ? (100.0F * ess / static_cast<float>(num_rollouts_total)) : 0.0F,
+    num_rollouts_total, validation_reasons.c_str(), max_pos_delta, max_vel_delta);
 
   if (impl_->skip_if_invalid && !validation.isValid()) {
     result.trajectory = input;

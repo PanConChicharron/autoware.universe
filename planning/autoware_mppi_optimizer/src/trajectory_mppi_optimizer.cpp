@@ -78,6 +78,8 @@ FirstOrderDubinsMppiCostParams make_cost_params(const trajectory_mppi_optimizer:
   output.steer_cmd_std_dev = static_cast<float>(params.steer_cmd_std_dev);
   output.accel_cmd_noise_exponent = static_cast<float>(params.accel_cmd_noise_exponent);
   output.steer_cmd_noise_exponent = static_cast<float>(params.steer_cmd_noise_exponent);
+  output.std_dev_decay = static_cast<float>(params.std_dev_decay);
+  output.offset_decay_rate = static_cast<float>(params.offset_decay_rate);
   output.nominal_curvature_min_chord_length_m =
     static_cast<float>(params.nominal_curvature_min_chord_length_m);
   output.lateral_acceleration_coeff = static_cast<float>(params.lateral_acceleration_coeff);

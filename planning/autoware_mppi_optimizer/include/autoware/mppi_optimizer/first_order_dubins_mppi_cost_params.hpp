@@ -51,6 +51,11 @@ struct FirstOrderDubinsMppiCostParams
   float accel_cmd_noise_exponent{1.0F};
   /** Power-law PSD exponent for steering-command sampling noise. */
   float steer_cmd_noise_exponent{1.0F};
+  /** Per-MPPI-iteration scale on sampling std-dev: effective_std = std_dev * decay^iter (1 = off).
+   */
+  float std_dev_decay{1.0F};
+  /** Colored-noise horizon decay: noise amplitude ~ decay^t along the control sequence. */
+  float offset_decay_rate{0.97F};
   /** Spatial window used only when deriving a cold-start nominal steer from the reference. */
   float nominal_curvature_min_chord_length_m{1.5F};
   float lateral_acceleration_coeff{300.0F};

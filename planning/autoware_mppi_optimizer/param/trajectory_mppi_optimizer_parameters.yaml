@@ -141,6 +141,18 @@ trajectory_mppi_optimizer:
     description: Steering command noise exponent
     validation: { gt_eq<>: [0.0] }
     read_only: false
+  std_dev_decay:
+    type: double
+    default_value: 1.0
+    description: Per-MPPI-iteration sampling std-dev scale (std * decay^iter); 1.0 disables decay
+    validation: { bounds<>: [0.0, 1.0] }
+    read_only: false
+  offset_decay_rate:
+    type: double
+    default_value: 0.97
+    description: Colored-noise amplitude decay along the control horizon
+    validation: { bounds<>: [0.0, 1.0] }
+    read_only: false
   drivable_area_safe_margin:
     type: double
     default_value: 0.0
