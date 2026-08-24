@@ -21,6 +21,7 @@
 #include <autoware/avoidance_target_detector/object_filtering.hpp>
 #include <autoware/trajectory_processor/trajectory_processor_plugin_base.hpp>
 #include <autoware_mppi_optimizer/trajectory_mppi_optimizer_parameters.hpp>
+#include <autoware_utils_debug/debug_publisher.hpp>
 #include <autoware_utils_diagnostics/diagnostics_interface.hpp>
 
 #include <autoware_map_msgs/msg/lanelet_map_bin.hpp>
@@ -90,6 +91,9 @@ private:
   void publish_status_diagnostic(
     std::uint8_t level, const std::string & message, const rclcpp::Time & stamp);
 
+  /** @brief Publishes MPPI wall-time subdivisions under ~/debug/processing_time_ms/. */
+  void publish_processing_time(const FirstOrderDubinsMppiTiming & timing);
+
   /** @brief Deletes stale MPPI markers. */
   void clear_markers(const std_msgs::msg::Header & header) const;
 
@@ -110,6 +114,7 @@ private:
   rclcpp::Publisher<Trajectory>::SharedPtr nominal_trajectory_pub_;
   rclcpp::Publisher<MarkerArray>::SharedPtr markers_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr enabled_pub_;
+  std::unique_ptr<autoware_utils_debug::DebugPublisher> debug_publisher_;
   std::unique_ptr<DiagnosticsInterface> cost_diagnostics_;
 
   std::optional<FirstOrderDubinsMppiDebug> pending_debug_;
