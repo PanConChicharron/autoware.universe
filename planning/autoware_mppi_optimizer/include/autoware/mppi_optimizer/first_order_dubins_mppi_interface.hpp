@@ -173,6 +173,14 @@ struct FirstOrderDubinsMppiValidationResult
   }
 };
 
+struct FirstOrderDubinsMppiTiming
+{
+  /** Wall time for seedNominalControl (t-MPT / last-u / diffusion). */
+  double seed_nominal_ms{0.0};
+  /** Total optimizeTrajectory wall time. */
+  double total_ms{0.0};
+};
+
 struct FirstOrderDubinsMppiDebug
 {
   Trajectory reference_trajectory;
@@ -186,6 +194,7 @@ struct FirstOrderDubinsMppiDebug
   FirstOrderDubinsMppiCostBreakdown nominal_cost_breakdown;
   /** Cost of the final selected control rollout. */
   FirstOrderDubinsMppiCostBreakdown cost_breakdown;
+  FirstOrderDubinsMppiTiming timing;
   float baseline_cost{0.0F};
   /** Hard-constraint validation of the generated post-step states. */
   FirstOrderDubinsMppiValidationResult validation;

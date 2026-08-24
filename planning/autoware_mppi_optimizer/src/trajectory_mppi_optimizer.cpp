@@ -19,8 +19,10 @@
 #include "autoware/mppi_optimizer/first_order_dubins_mppi_vehicle_params_ros.hpp"
 #include "autoware/mppi_optimizer/mppi_debug_markers.hpp"
 
+#include <autoware_utils_debug/debug_publisher.hpp>
 #include <pluginlib/class_list_macros.hpp>
 
+#include <autoware_internal_debug_msgs/msg/float64_stamped.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
 
 #include <algorithm>
@@ -165,6 +167,7 @@ void TrajectoryMppiOptimizer::on_initialize(
   markers_pub_ = node->create_publisher<MarkerArray>("~/debug/mppi/markers", 1);
   enabled_pub_ = node->create_publisher<std_msgs::msg::Bool>(
     "~/debug/mppi/enabled", rclcpp::QoS{1}.transient_local());
+  debug_publisher_ = std::make_unique<autoware_utils_debug::DebugPublisher>(node, "~/debug");
   cost_diagnostics_ = std::make_unique<DiagnosticsInterface>(node, "mppi_cost_breakdown");
   publish_enabled(false);
 }
@@ -256,6 +259,7 @@ ProcessingResult TrajectoryMppiOptimizer::process(
     const bool apply_result = !params_.shadow_mode && !result.debug.was_rejected;
     publish_enabled(apply_result);
     publish_cost_diagnostics(result.debug, apply_result, rclcpp::Time{input.header.stamp});
+    publish_processing_time(result.debug.timing);
     if (result.debug.was_rejected) {
       pending_markers_.markers.clear();
       clear_markers(input.header);
@@ -434,6 +438,19 @@ void TrajectoryMppiOptimizer::publish_status_diagnostic(
   cost_diagnostics_->clear();
   cost_diagnostics_->update_level_and_message(level, message);
   cost_diagnostics_->publish(stamp);
+}
+
+void TrajectoryMppiOptimizer::publish_processing_time(const FirstOrderDubinsMppiTiming & timing)
+{
+  if (!debug_publisher_) {
+    return;
+  }
+  // Sibling Float64Stamped topics under ~/debug/processing_time_ms/ so PlotJuggler shows
+  // subdivisions next to the processor total (~/debug/processing_time_ms.data).
+  debug_publisher_->publish<autoware_internal_debug_msgs::msg::Float64Stamped>(
+    "processing_time_ms/nominal", timing.seed_nominal_ms);
+  debug_publisher_->publish<autoware_internal_debug_msgs::msg::Float64Stamped>(
+    "processing_time_ms/mppi", timing.total_ms);
 }
 
 void TrajectoryMppiOptimizer::clear_markers(const std_msgs::msg::Header & header) const
