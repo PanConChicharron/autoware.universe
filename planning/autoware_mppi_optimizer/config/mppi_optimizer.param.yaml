@@ -1,8 +1,8 @@
 /**:
   ros__parameters:
     mppi_optimizer:
-      enabled: false
-      shadow_mode: false
+      enabled: true
+      shadow_mode: true
 
       # FirstOrderDubinsBicycleCostParams (see first_order_dubins_bicycle_cost.cuh)
       lambda: 100.0
