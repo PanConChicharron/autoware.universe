@@ -95,6 +95,8 @@ struct FirstOrderDubinsMppiCostBreakdown
   float running_total{0.0F};
   float terminal_total{0.0F};
   float total{0.0F};
+  /** Signed cross-track at the first post-step state [m]; + = left of path tangent. */
+  float signed_lateral_error_m{0.0F};
   std::size_t evaluated_timesteps{0U};
 
   [[nodiscard]] float componentTotal() const

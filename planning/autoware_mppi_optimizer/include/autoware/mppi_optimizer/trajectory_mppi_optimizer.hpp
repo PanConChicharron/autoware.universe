@@ -26,6 +26,7 @@
 
 #include <autoware_map_msgs/msg/lanelet_map_bin.hpp>
 #include <autoware_planning_msgs/msg/trajectory.hpp>
+#include <nav_msgs/msg/odometry.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/header.hpp>
 #include <unique_identifier_msgs/msg/uuid.hpp>
@@ -93,6 +94,14 @@ private:
 
   /** @brief Publishes MPPI wall-time subdivisions under ~/debug/processing_time_ms/. */
   void publish_processing_time(const FirstOrderDubinsMppiTiming & timing);
+
+  /** @brief Publishes planar distance from ego to the first DP reference point [m]. */
+  void publish_ego_to_dp_first_point_distance(
+    const nav_msgs::msg::Odometry & odometry, const Trajectory & reference) const;
+
+  /** @brief Signed cross-track from ego to the raw DP polyline (+ = left); matches MPPI cost. */
+  void publish_ego_signed_lateral_error_on_dp(
+    const nav_msgs::msg::Odometry & odometry, const Trajectory & reference) const;
 
   /** @brief Deletes stale MPPI markers. */
   void clear_markers(const std_msgs::msg::Header & header) const;

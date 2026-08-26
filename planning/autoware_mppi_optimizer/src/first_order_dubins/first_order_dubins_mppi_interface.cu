@@ -147,6 +147,15 @@ CostBreakdown reconstructControlTrajectoryCost(
     model.enforceConstraints(state, control);
     model.step(
       state, next_state, state_derivative, control, output, static_cast<float>(timestep), kDt);
+    if (timestep == 0) {
+      using OutputIndex = FirstOrderDubinsBicycleParams::OutputIndex;
+      result.signed_lateral_error_m = cost
+                                        .computeLateralPathMetrics(
+                                          output(static_cast<int>(OutputIndex::BASELINK_POS_I_X)),
+                                          output(static_cast<int>(OutputIndex::BASELINK_POS_I_Y)),
+                                          output(static_cast<int>(OutputIndex::YAW)))
+                                        .lateral_distance;
+    }
     accumulateCostBreakdown(
       result, cost.computeRunningCostBreakdown(output, control, timestep, &crash_status));
     state = next_state;
