@@ -15,13 +15,17 @@
 #ifndef AUTOWARE__COLLISION_DETECTOR__NODE_HPP_
 #define AUTOWARE__COLLISION_DETECTOR__NODE_HPP_
 
+#include "autoware/collision_detector/types.hpp"
+
 #include <autoware/motion_utils/vehicle/vehicle_state_checker.hpp>
 #include <autoware_utils/ros/polling_subscriber.hpp>
 #include <autoware_vehicle_info_utils/vehicle_info_utils.hpp>
+#include <collision_detector_node_parameters.hpp>
 #include <diagnostic_updater/diagnostic_updater.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/subscription.hpp>
 #include <tf2/utils.hpp>
+#include <tl_expected/expected.hpp>
 
 #include <autoware_adapi_v1_msgs/msg/operation_mode_state.hpp>
 #include <autoware_perception_msgs/msg/predicted_objects.hpp>
@@ -42,51 +46,15 @@
 
 namespace autoware::collision_detector
 {
-using autoware::vehicle_info_utils::VehicleInfo;
 using autoware_adapi_v1_msgs::msg::OperationModeState;
 using autoware_perception_msgs::msg::PredictedObject;
 using autoware_perception_msgs::msg::PredictedObjects;
 using autoware_perception_msgs::msg::Shape;
 
-using Obstacle = std::pair<double /* distance */, geometry_msgs::msg::Point>;
-
 class CollisionDetectorNode : public rclcpp::Node
 {
 public:
   explicit CollisionDetectorNode(const rclcpp::NodeOptions & node_options);
-
-  struct NearbyObjectTypeFilters
-  {
-    bool filter_car{false};
-    bool filter_truck{false};
-    bool filter_bus{false};
-    bool filter_trailer{false};
-    bool filter_unknown{false};
-    bool filter_bicycle{false};
-    bool filter_motorcycle{false};
-    bool filter_pedestrian{false};
-    bool filter_animal{false};
-    bool filter_hazard{false};
-    bool filter_over_drivable{false};
-    bool filter_under_drivable{false};
-  };
-
-  struct NodeParam
-  {
-    bool use_pointcloud{};
-    bool use_dynamic_object{};
-    double collision_distance{};
-    double nearby_filter_radius{};
-    double keep_ignoring_time{};
-    NearbyObjectTypeFilters nearby_object_type_filters;
-    bool ignore_behind_rear_axle{};
-    struct
-    {
-      double on{};
-      double off{};
-      double off_distance_hysteresis{};
-    } time_buffer;
-  };
 
   struct TimestampedObject
   {
@@ -95,7 +63,7 @@ public:
   };
 
 private:
-  PredictedObjects filterObjects(const PredictedObjects & objects);
+  tl::expected<PredictedObjects, std::string> filterObjects(const PredictedObjects & objects);
 
   void removeOldObjects(
     std::vector<TimestampedObject> & container, const rclcpp::Time & current_time,
@@ -106,20 +74,20 @@ private:
 
   void checkCollision(diagnostic_updater::DiagnosticStatusWrapper & stat);
 
-  std::optional<Obstacle> getNearestObstacle(
-    const autoware_utils_geometry::Polygon2d & ego_polygon) const;
+  result_t getNearestObstacle(const autoware_utils_geometry::LinearRing2d & ego_polygon) const;
 
-  std::optional<Obstacle> getNearestObstacleByPointCloud(
-    const autoware_utils_geometry::Polygon2d & ego_polygon) const;
+  result_t getNearestObstacleByPointCloud(
+    const autoware_utils_geometry::LinearRing2d & ego_polygon) const;
 
-  std::optional<Obstacle> getNearestObstacleByDynamicObject(
-    const autoware_utils_geometry::Polygon2d & ego_polygon) const;
+  result_t getNearestObstacleByDynamicObject(
+    const autoware_utils_geometry::LinearRing2d & ego_polygon) const;
 
   std::optional<geometry_msgs::msg::TransformStamped> getTransform(
     const std::string & source, const std::string & target, const rclcpp::Time & stamp,
     double duration_sec) const;
 
   // ros
+  rclcpp::Clock::SharedPtr clock_{get_clock()};
   mutable tf2_ros::Buffer tf_buffer_{get_clock()};
   mutable tf2_ros::TransformListener tf_listener_{tf_buffer_};
   rclcpp::TimerBase::SharedPtr timer_;
@@ -137,7 +105,8 @@ private:
     create_publisher<visualization_msgs::msg::MarkerArray>("~/debug_markers", 1);
 
   // parameter
-  NodeParam node_param_;
+  std::shared_ptr<collision_detector_node::ParamListener> param_listener_;
+  collision_detector_node::Params params_;
   autoware::vehicle_info_utils::VehicleInfo vehicle_info_;
 
   // data

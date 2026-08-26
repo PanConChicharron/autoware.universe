@@ -20,16 +20,17 @@
 #include <autoware_utils/geometry/geometry.hpp>
 #include <autoware_utils/ros/uuid_helper.hpp>
 #include <autoware_utils_geometry/boost_geometry.hpp>
+#include <autoware_utils_geometry/boost_polygon_utils.hpp>
+#include <collision_detector_node_parameters.hpp>
 #include <tf2_eigen/tf2_eigen.hpp>
+
+#include <sensor_msgs/point_cloud2_iterator.hpp>
 
 #include <boost/geometry.hpp>
 #include <boost/geometry/geometries/linestring.hpp>
 #include <boost/geometry/geometries/point_xy.hpp>
 
-#include <pcl/common/transforms.h>
-#include <pcl/point_cloud.h>
-#include <pcl_conversions/pcl_conversions.h>
-
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <string>
@@ -44,134 +45,13 @@ namespace autoware::collision_detector
 {
 namespace bg = boost::geometry;
 using autoware_utils::create_point;
-using autoware_utils::pose2transform;
-
-namespace
-{
-
-geometry_msgs::msg::Point32 createPoint32(const double x, const double y, const double z)
-{
-  geometry_msgs::msg::Point32 p;
-  p.x = x;
-  p.y = y;
-  p.z = z;
-  return p;
-}
-
-autoware_utils_geometry::Polygon2d createObjPolygon(
-  const geometry_msgs::msg::Pose & pose, const geometry_msgs::msg::Polygon & footprint)
-{
-  geometry_msgs::msg::Polygon transformed_polygon{};
-  geometry_msgs::msg::TransformStamped geometry_tf{};
-  geometry_tf.transform = pose2transform(pose);
-  tf2::doTransform(footprint, transformed_polygon, geometry_tf);
-
-  autoware_utils_geometry::Polygon2d object_polygon;
-  for (const auto & p : transformed_polygon.points) {
-    object_polygon.outer().push_back(autoware_utils_geometry::Point2d(p.x, p.y));
-  }
-
-  bg::correct(object_polygon);
-
-  return object_polygon;
-}
-
-autoware_utils_geometry::Polygon2d createObjPolygon(
-  const geometry_msgs::msg::Pose & pose, const geometry_msgs::msg::Vector3 & size)
-{
-  const double length_m = size.x / 2.0;
-  const double width_m = size.y / 2.0;
-
-  geometry_msgs::msg::Polygon polygon{};
-
-  polygon.points.push_back(createPoint32(length_m, -width_m, 0.0));
-  polygon.points.push_back(createPoint32(length_m, width_m, 0.0));
-  polygon.points.push_back(createPoint32(-length_m, width_m, 0.0));
-  polygon.points.push_back(createPoint32(-length_m, -width_m, 0.0));
-
-  return createObjPolygon(pose, polygon);
-}
-
-autoware_utils_geometry::Polygon2d createObjPolygonForCylinder(
-  const geometry_msgs::msg::Pose & pose, const double diameter)
-{
-  geometry_msgs::msg::Polygon polygon{};
-
-  const double radius = diameter * 0.5;
-  // add hexagon points
-  for (int i = 0; i < 6; ++i) {
-    const double angle = 2.0 * M_PI * static_cast<double>(i) / 6.0;
-    const double x = radius * std::cos(angle);
-    const double y = radius * std::sin(angle);
-    polygon.points.push_back(createPoint32(x, y, 0.0));
-  }
-
-  return createObjPolygon(pose, polygon);
-}
-
-autoware_utils_geometry::Polygon2d createSelfPolygon(
-  const VehicleInfo & vehicle_info, const double extra_offset, const bool ignore_behind_rear_axle)
-{
-  const double & front_m = vehicle_info.max_longitudinal_offset_m + extra_offset;
-  const double & width_left_m = vehicle_info.max_lateral_offset_m + extra_offset;
-  const double & width_right_m = vehicle_info.min_lateral_offset_m - extra_offset;
-  const double & rear_m =
-    ignore_behind_rear_axle ? 0.0 : vehicle_info.min_longitudinal_offset_m - extra_offset;
-
-  autoware_utils_geometry::Polygon2d ego_polygon;
-
-  ego_polygon.outer().push_back(autoware_utils_geometry::Point2d(front_m, width_left_m));
-  ego_polygon.outer().push_back(autoware_utils_geometry::Point2d(front_m, width_right_m));
-  ego_polygon.outer().push_back(autoware_utils_geometry::Point2d(rear_m, width_right_m));
-  ego_polygon.outer().push_back(autoware_utils_geometry::Point2d(rear_m, width_left_m));
-
-  bg::correct(ego_polygon);
-
-  return ego_polygon;
-}
-}  // namespace
 
 CollisionDetectorNode::CollisionDetectorNode(const rclcpp::NodeOptions & node_options)
 : Node("collision_detector_node", node_options), updater_(this)
 {
-  // Parameters
-  {
-    auto & p = node_param_;
-    p.use_pointcloud = this->declare_parameter<bool>("use_pointcloud");
-    p.use_dynamic_object = this->declare_parameter<bool>("use_dynamic_object");
-    p.collision_distance = this->declare_parameter<double>("collision_distance");
-    p.nearby_filter_radius = this->declare_parameter<double>("nearby_filter_radius");
-    p.keep_ignoring_time = this->declare_parameter<double>("keep_ignoring_time");
-    p.nearby_object_type_filters.filter_car =
-      this->declare_parameter<bool>("nearby_object_type_filters.filter_car");
-    p.nearby_object_type_filters.filter_truck =
-      this->declare_parameter<bool>("nearby_object_type_filters.filter_truck");
-    p.nearby_object_type_filters.filter_bus =
-      this->declare_parameter<bool>("nearby_object_type_filters.filter_bus");
-    p.nearby_object_type_filters.filter_trailer =
-      this->declare_parameter<bool>("nearby_object_type_filters.filter_trailer");
-    p.nearby_object_type_filters.filter_unknown =
-      this->declare_parameter<bool>("nearby_object_type_filters.filter_unknown");
-    p.nearby_object_type_filters.filter_bicycle =
-      this->declare_parameter<bool>("nearby_object_type_filters.filter_bicycle");
-    p.nearby_object_type_filters.filter_motorcycle =
-      this->declare_parameter<bool>("nearby_object_type_filters.filter_motorcycle");
-    p.nearby_object_type_filters.filter_pedestrian =
-      this->declare_parameter<bool>("nearby_object_type_filters.filter_pedestrian");
-    p.nearby_object_type_filters.filter_animal =
-      this->declare_parameter<bool>("nearby_object_type_filters.filter_animal");
-    p.nearby_object_type_filters.filter_hazard =
-      this->declare_parameter<bool>("nearby_object_type_filters.filter_hazard");
-    p.nearby_object_type_filters.filter_over_drivable =
-      this->declare_parameter<bool>("nearby_object_type_filters.filter_over_drivable");
-    p.nearby_object_type_filters.filter_under_drivable =
-      this->declare_parameter<bool>("nearby_object_type_filters.filter_under_drivable");
-    p.ignore_behind_rear_axle = this->declare_parameter<bool>("ignore_behind_rear_axle");
-    p.time_buffer.on = this->declare_parameter<double>("time_buffer.on_duration");
-    p.time_buffer.off = this->declare_parameter<double>("time_buffer.off_duration");
-    p.time_buffer.off_distance_hysteresis =
-      this->declare_parameter<double>("time_buffer.off_distance_hysteresis");
-  }
+  param_listener_ =
+    std::make_shared<collision_detector_node::ParamListener>(this->get_node_parameters_interface());
+  params_ = param_listener_->get_params();
 
   vehicle_info_ = autoware::vehicle_info_utils::VehicleInfoUtils(*this).getVehicleInfo();
 
@@ -183,11 +63,11 @@ CollisionDetectorNode::CollisionDetectorNode(const rclcpp::NodeOptions & node_op
   vehicle_stop_checker_ = std::make_unique<autoware::motion_utils::VehicleStopChecker>(this);
 }
 
-PredictedObjects CollisionDetectorNode::filterObjects(const PredictedObjects & input_objects)
+tl::expected<PredictedObjects, std::string> CollisionDetectorNode::filterObjects(
+  const PredictedObjects & input_objects)
 {
   PredictedObjects filtered_objects;
   filtered_objects.header = input_objects.header;
-  filtered_objects.header.stamp = this->now();
 
   const rclcpp::Time current_object_time = input_objects.header.stamp;
   const rclcpp::Duration observed_objects_keep_time =
@@ -204,8 +84,8 @@ PredictedObjects CollisionDetectorNode::filterObjects(const PredictedObjects & i
     getTransform("base_link", input_objects.header.frame_id, input_objects.header.stamp, 0.5);
 
   if (!transform_stamped) {
-    RCLCPP_ERROR(this->get_logger(), "Failed to get transform from object frame to base_link");
-    return filtered_objects;
+    return tl::make_unexpected(
+      "failed to get transform from " + input_objects.header.frame_id + " to base_link");
   }
 
   Eigen::Affine3f isometry = tf2::transformToEigen(transform_stamped->transform).cast<float>();
@@ -220,7 +100,7 @@ PredictedObjects CollisionDetectorNode::filterObjects(const PredictedObjects & i
 
     // Calculate object distance from base_link
     const double object_distance = transformed_position.head<2>().norm();
-    const bool is_within_range = (object_distance <= node_param_.nearby_filter_radius);
+    const bool is_within_range = (object_distance <= params_.nearby_filter_radius);
 
     // Determine if the object should be excluded based on its classification
     const auto classification =
@@ -260,7 +140,7 @@ PredictedObjects CollisionDetectorNode::filterObjects(const PredictedObjects & i
     // If the object was ignored and is still within the ignore period, continue filtering
     if (
       was_ignored && (current_object_time - ignored_it->timestamp) <
-                       rclcpp::Duration::from_seconds(node_param_.keep_ignoring_time)) {
+                       rclcpp::Duration::from_seconds(params_.keep_ignoring_time)) {
       // Check if the object exists in observed_objects_
       auto observed_it = std::find_if(
         observed_objects_.begin(), observed_objects_.end(),
@@ -316,29 +196,29 @@ bool CollisionDetectorNode::shouldBeExcluded(
 {
   switch (classification) {
     case autoware_perception_msgs::msg::ObjectClassification::CAR:
-      return node_param_.nearby_object_type_filters.filter_car;
+      return params_.nearby_object_type_filters.filter_car;
     case autoware_perception_msgs::msg::ObjectClassification::TRUCK:
-      return node_param_.nearby_object_type_filters.filter_truck;
+      return params_.nearby_object_type_filters.filter_truck;
     case autoware_perception_msgs::msg::ObjectClassification::BUS:
-      return node_param_.nearby_object_type_filters.filter_bus;
+      return params_.nearby_object_type_filters.filter_bus;
     case autoware_perception_msgs::msg::ObjectClassification::TRAILER:
-      return node_param_.nearby_object_type_filters.filter_trailer;
+      return params_.nearby_object_type_filters.filter_trailer;
     case autoware_perception_msgs::msg::ObjectClassification::UNKNOWN:
-      return node_param_.nearby_object_type_filters.filter_unknown;
+      return params_.nearby_object_type_filters.filter_unknown;
     case autoware_perception_msgs::msg::ObjectClassification::BICYCLE:
-      return node_param_.nearby_object_type_filters.filter_bicycle;
+      return params_.nearby_object_type_filters.filter_bicycle;
     case autoware_perception_msgs::msg::ObjectClassification::MOTORCYCLE:
-      return node_param_.nearby_object_type_filters.filter_motorcycle;
+      return params_.nearby_object_type_filters.filter_motorcycle;
     case autoware_perception_msgs::msg::ObjectClassification::PEDESTRIAN:
-      return node_param_.nearby_object_type_filters.filter_pedestrian;
+      return params_.nearby_object_type_filters.filter_pedestrian;
     case autoware_perception_msgs::msg::ObjectClassification::ANIMAL:
-      return node_param_.nearby_object_type_filters.filter_animal;
+      return params_.nearby_object_type_filters.filter_animal;
     case autoware_perception_msgs::msg::ObjectClassification::HAZARD:
-      return node_param_.nearby_object_type_filters.filter_hazard;
+      return params_.nearby_object_type_filters.filter_hazard;
     case autoware_perception_msgs::msg::ObjectClassification::OVER_DRIVABLE:
-      return node_param_.nearby_object_type_filters.filter_over_drivable;
+      return params_.nearby_object_type_filters.filter_over_drivable;
     case autoware_perception_msgs::msg::ObjectClassification::UNDER_DRIVABLE:
-      return node_param_.nearby_object_type_filters.filter_under_drivable;
+      return params_.nearby_object_type_filters.filter_under_drivable;
     default:
       return false;
   }
@@ -346,6 +226,10 @@ bool CollisionDetectorNode::shouldBeExcluded(
 
 void CollisionDetectorNode::checkCollision(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
+  if (param_listener_->is_old(params_)) {
+    params_ = param_listener_->get_params();
+  }
+
   odometry_ptr_ = sub_odometry_.take_data();
 
   if (!odometry_ptr_) {
@@ -356,6 +240,7 @@ void CollisionDetectorNode::checkCollision(diagnostic_updater::DiagnosticStatusW
 
   if (vehicle_stop_checker_->isVehicleStopped()) {
     is_error_diag_ = false;
+    start_of_consecutive_collision_stamp_.reset();
     stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "vehicle is stopping");
     return;
   }
@@ -364,13 +249,13 @@ void CollisionDetectorNode::checkCollision(diagnostic_updater::DiagnosticStatusW
   object_ptr_ = sub_dynamic_objects_.take_data();
   operation_mode_ptr_ = sub_operation_mode_.take_data();
 
-  if (node_param_.use_pointcloud && !pointcloud_ptr_) {
+  if (params_.use_pointcloud && !pointcloud_ptr_) {
     RCLCPP_WARN_THROTTLE(
       this->get_logger(), *this->get_clock(), 5000 /* ms */, "waiting for pointcloud info...");
     return;
   }
 
-  if (node_param_.use_dynamic_object && !object_ptr_) {
+  if (params_.use_dynamic_object && !object_ptr_) {
     RCLCPP_WARN_THROTTLE(
       this->get_logger(), *this->get_clock(), 5000 /* ms */, "waiting for dynamic object info...");
     return;
@@ -381,15 +266,36 @@ void CollisionDetectorNode::checkCollision(diagnostic_updater::DiagnosticStatusW
       this->get_logger(), *this->get_clock(), 5000 /* ms */, "waiting for operation mode info...");
     return;
   }
-  filtered_object_ptr_ = std::make_shared<PredictedObjects>(filterObjects(*object_ptr_));
-
-  const auto hysteresis = is_error_diag_ ? node_param_.time_buffer.off_distance_hysteresis : 0.0;
+  const auto hysteresis = is_error_diag_ ? params_.time_buffer.off_distance_hysteresis : 0.0;
+  // The rear overhang is cancelled so that the rear edge sits on the rear axle.
+  const auto rear_margin =
+    params_.ignore_behind_rear_axle ? vehicle_info_.min_longitudinal_offset_m : hysteresis;
   const auto ego_polygon =
-    createSelfPolygon(vehicle_info_, hysteresis, node_param_.ignore_behind_rear_axle);
+    vehicle_info_.createFootprint(hysteresis, hysteresis, hysteresis, hysteresis, rear_margin);
+
+  auto filtered_objects = filterObjects(*object_ptr_);
+  if (!filtered_objects) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 5000 /* ms */, "%s",
+      filtered_objects.error().c_str());
+    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN, filtered_objects.error());
+    return;
+  }
+  filtered_object_ptr_ = std::make_shared<PredictedObjects>(std::move(*filtered_objects));
+
   const auto nearest_obstacle = getNearestObstacle(ego_polygon);
 
+  if (!nearest_obstacle && nearest_obstacle.error() == ObstacleSearchError::transform_unavailable) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), *this->get_clock(), 5000 /* ms */,
+      "failed to get transform to search for obstacles");
+    stat.summary(
+      diagnostic_msgs::msg::DiagnosticStatus::WARN, "failed to get transform to search obstacles");
+    return;
+  }
+
   const auto is_collision_found =
-    !nearest_obstacle ? false : nearest_obstacle->first < node_param_.collision_distance;
+    nearest_obstacle && nearest_obstacle->first < params_.collision_distance;
 
   // When a collision is detected, update timestamps to track collision duration
   // - start_of_consecutive_collision_stamp_: marks when a continuous collision began
@@ -412,11 +318,12 @@ void CollisionDetectorNode::checkCollision(diagnostic_updater::DiagnosticStatusW
   //    - This prevents triggering on brief/momentary collisions
   const auto condition_to_trigger_error = [&]() {
     if (is_error_diag_) {
-      return (this->now() - *most_recent_collision_stamp_).seconds() < node_param_.time_buffer.off;
+      return (this->now() - *most_recent_collision_stamp_).seconds() <
+             params_.time_buffer.off_duration;
     }
     return start_of_consecutive_collision_stamp_.has_value() &&
            (this->now() - *start_of_consecutive_collision_stamp_).seconds() >=
-             node_param_.time_buffer.on;
+             params_.time_buffer.on_duration;
   };
 
   diagnostic_msgs::msg::DiagnosticStatus status;
@@ -424,12 +331,14 @@ void CollisionDetectorNode::checkCollision(diagnostic_updater::DiagnosticStatusW
     is_error_diag_ = true;
     status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
     status.message = "collision detected";
+    RCLCPP_ERROR_THROTTLE(
+        this->get_logger(), *clock_, 1000 /* ms */, "Collision is detected by collision_detector");
     if (nearest_obstacle) {
       stat.addf("Distance to nearest neighbor object", "%lf", nearest_obstacle->first);
     } else {
       stat.addf(
         "Time since last detection", "%lf",
-        (this->now() - *most_recent_collision_stamp_).seconds() < node_param_.time_buffer.off);
+        (this->now() - *most_recent_collision_stamp_).seconds());
     }
   } else {
     is_error_diag_ = false;
@@ -441,82 +350,112 @@ void CollisionDetectorNode::checkCollision(diagnostic_updater::DiagnosticStatusW
   pub_debug_->publish(generate_debug_markers(ego_polygon, nearest_obstacle, is_error_diag_));
 }
 
-std::optional<Obstacle> CollisionDetectorNode::getNearestObstacle(
-  const autoware_utils_geometry::Polygon2d & ego_polygon) const
+result_t CollisionDetectorNode::getNearestObstacle(
+  const autoware_utils_geometry::LinearRing2d & ego_polygon) const
 {
-  std::optional<Obstacle> nearest_pointcloud;
-  std::optional<Obstacle> nearest_object;
+  const auto search_failed = [](const result_t & result) {
+    return !result && result.error() == ObstacleSearchError::transform_unavailable;
+  };
 
-  if (node_param_.use_pointcloud) {
-    nearest_pointcloud = getNearestObstacleByPointCloud(ego_polygon);
+  const auto closer_of = [&search_failed](const result_t & nearest, const result_t & candidate) {
+    if (search_failed(nearest)) {
+      return nearest;
+    }
+    if (search_failed(candidate) || !nearest) {
+      return candidate;
+    }
+    if (!candidate) {
+      return nearest;
+    }
+    return candidate->first < nearest->first ? candidate : nearest;
+  };
+
+  result_t nearest_obstacle = tl::make_unexpected(ObstacleSearchError::no_obstacle_found);
+
+  if (params_.use_pointcloud) {
+    nearest_obstacle = closer_of(nearest_obstacle, getNearestObstacleByPointCloud(ego_polygon));
   }
 
-  if (node_param_.use_dynamic_object) {
-    nearest_object = getNearestObstacleByDynamicObject(ego_polygon);
+  if (params_.use_dynamic_object) {
+    nearest_obstacle = closer_of(nearest_obstacle, getNearestObstacleByDynamicObject(ego_polygon));
   }
 
-  if (!nearest_pointcloud && !nearest_object) {
-    return {};
-  }
-
-  if (!nearest_pointcloud) {
-    return nearest_object;
-  }
-
-  if (!nearest_object) {
-    return nearest_pointcloud;
-  }
-
-  return nearest_pointcloud->first < nearest_object->first ? nearest_pointcloud : nearest_object;
+  return nearest_obstacle;
 }
 
-std::optional<Obstacle> CollisionDetectorNode::getNearestObstacleByPointCloud(
-  const autoware_utils_geometry::Polygon2d & ego_polygon) const
+result_t CollisionDetectorNode::getNearestObstacleByPointCloud(
+  const autoware_utils_geometry::LinearRing2d & ego_polygon) const
 {
   const auto transform_stamped =
     getTransform("base_link", pointcloud_ptr_->header.frame_id, pointcloud_ptr_->header.stamp, 0.5);
 
   geometry_msgs::msg::Point nearest_point;
-  auto minimum_distance = std::numeric_limits<double>::max();
+  auto minimum_distance = std::numeric_limits<double>::infinity();
 
   if (!transform_stamped) {
-    return {};
+    return tl::make_unexpected(ObstacleSearchError::transform_unavailable);
   }
 
-  Eigen::Affine3f isometry = tf2::transformToEigen(transform_stamped->transform).cast<float>();
-  pcl::PointCloud<pcl::PointXYZ> transformed_pointcloud;
-  pcl::fromROSMsg(*pointcloud_ptr_, transformed_pointcloud);
-  pcl::transformPointCloud(transformed_pointcloud, transformed_pointcloud, isometry);
+  const Eigen::Affine3f isometry =
+    tf2::transformToEigen(transform_stamped->transform).cast<float>();
 
-  for (const auto & p : transformed_pointcloud) {
-    autoware_utils_geometry::Point2d boost_point(p.x, p.y);
+  // The bounding box rejects far points before the exact polygon distance is calculated.
+  const auto ego_box = bg::return_envelope<autoware_utils_geometry::Box2d>(ego_polygon);
 
+  sensor_msgs::PointCloud2ConstIterator<float> iter_x(*pointcloud_ptr_, "x");
+  sensor_msgs::PointCloud2ConstIterator<float> iter_y(*pointcloud_ptr_, "y");
+  sensor_msgs::PointCloud2ConstIterator<float> iter_z(*pointcloud_ptr_, "z");
+
+  for (; iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z) {
+    const Eigen::Vector3f point = isometry * Eigen::Vector3f(*iter_x, *iter_y, *iter_z);
+
+    // An infinite minimum distance widens the box to infinity, so no point is rejected yet.
+    const bool is_outside_of_box =
+      point.x() < bg::get<bg::min_corner, 0>(ego_box) - minimum_distance ||
+      point.x() > bg::get<bg::max_corner, 0>(ego_box) + minimum_distance ||
+      point.y() < bg::get<bg::min_corner, 1>(ego_box) - minimum_distance ||
+      point.y() > bg::get<bg::max_corner, 1>(ego_box) + minimum_distance;
+    if (is_outside_of_box) {
+      continue;
+    }
+
+    const autoware_utils_geometry::Point2d boost_point(point.x(), point.y());
     const auto distance_to_object = bg::distance(ego_polygon, boost_point);
 
     if (distance_to_object < minimum_distance) {
-      nearest_point = create_point(p.x, p.y, p.z);
+      nearest_point = create_point(point.x(), point.y(), point.z());
       minimum_distance = distance_to_object;
     }
+
+    // No point can be closer than a point inside the polygon, so the search is finished.
+    if (minimum_distance <= 0.0) {
+      break;
+    }
+  }
+
+  if (!std::isfinite(minimum_distance)) {
+    return tl::make_unexpected(ObstacleSearchError::no_obstacle_found);
   }
 
   return std::make_pair(minimum_distance, nearest_point);
 }
 
-std::optional<Obstacle> CollisionDetectorNode::getNearestObstacleByDynamicObject(
-  const autoware_utils_geometry::Polygon2d & ego_polygon) const
+result_t CollisionDetectorNode::getNearestObstacleByDynamicObject(
+  const autoware_utils_geometry::LinearRing2d & ego_polygon) const
 {
   const auto transform_stamped = getTransform(
     filtered_object_ptr_->header.frame_id, "base_link", filtered_object_ptr_->header.stamp, 0.5);
 
   geometry_msgs::msg::Point nearest_point;
-  auto minimum_distance = std::numeric_limits<double>::max();
+  auto minimum_distance = std::numeric_limits<double>::infinity();
 
   if (!transform_stamped) {
-    return {};
+    return tl::make_unexpected(ObstacleSearchError::transform_unavailable);
   }
 
   tf2::Transform tf_src2target;
   tf2::fromMsg(transform_stamped->transform, tf_src2target);
+  const auto tf_target2src = tf_src2target.inverse();
 
   for (const auto & object : filtered_object_ptr_->objects) {
     const auto & object_pose = object.kinematics.initial_pose_with_covariance.pose;
@@ -525,22 +464,20 @@ std::optional<Obstacle> CollisionDetectorNode::getNearestObstacleByDynamicObject
     tf2::fromMsg(object_pose, tf_src2object);
 
     geometry_msgs::msg::Pose transformed_object_pose;
-    tf2::toMsg(tf_src2target.inverse() * tf_src2object, transformed_object_pose);
+    tf2::toMsg(tf_target2src * tf_src2object, transformed_object_pose);
 
-    const auto object_polygon = [&]() {
-      switch (object.shape.type) {
-        case Shape::POLYGON:
-          return createObjPolygon(transformed_object_pose, object.shape.footprint);
-        case Shape::CYLINDER:
-          return createObjPolygonForCylinder(transformed_object_pose, object.shape.dimensions.x);
-        case Shape::BOUNDING_BOX:
-          return createObjPolygon(transformed_object_pose, object.shape.dimensions);
-        default:
-          // node return warning
-          RCLCPP_WARN(this->get_logger(), "Unsupported shape type: %d", object.shape.type);
-          return createObjPolygon(transformed_object_pose, object.shape.dimensions);
-      }
-    }();
+    // to_polygon2d throws on an unknown type, so the shape falls back to a bounding box.
+    auto shape = object.shape;
+    if (
+      shape.type != Shape::POLYGON && shape.type != Shape::CYLINDER &&
+      shape.type != Shape::BOUNDING_BOX) {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *clock_, 5000 /* ms */, "Unsupported shape type: %d", shape.type);
+      shape.type = Shape::BOUNDING_BOX;
+    }
+
+    const auto object_polygon =
+      autoware_utils_geometry::to_polygon2d(transformed_object_pose, shape);
 
     const auto distance_to_object = bg::distance(ego_polygon, object_polygon);
 
@@ -548,6 +485,10 @@ std::optional<Obstacle> CollisionDetectorNode::getNearestObstacleByDynamicObject
       nearest_point = object_pose.position;
       minimum_distance = distance_to_object;
     }
+  }
+
+  if (!std::isfinite(minimum_distance)) {
+    return tl::make_unexpected(ObstacleSearchError::no_obstacle_found);
   }
 
   return std::make_pair(minimum_distance, nearest_point);

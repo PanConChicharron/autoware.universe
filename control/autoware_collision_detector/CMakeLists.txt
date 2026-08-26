@@ -6,11 +6,14 @@ autoware_package()
 
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(PCL REQUIRED COMPONENTS common)
 
 include_directories(
   SYSTEM
     ${EIGEN3_INCLUDE_DIR}
+)
+
+generate_parameter_library(collision_detector_node_parameters
+  param/collision_detector_node_parameters.yaml
 )
 
 ament_auto_add_library(${PROJECT_NAME} SHARED
@@ -18,7 +21,7 @@ ament_auto_add_library(${PROJECT_NAME} SHARED
 )
 
 target_link_libraries(${PROJECT_NAME}
-  ${PCL_LIBRARIES}
+  collision_detector_node_parameters
 )
 
 rclcpp_components_register_node(${PROJECT_NAME}
