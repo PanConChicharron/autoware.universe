@@ -16,7 +16,6 @@
 
 #include "autoware/avoidance_target_detector/rtree_filtering.hpp"
 
-#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <autoware_lanelet2_extension/projection/mgrs_projector.hpp>
 
 #include <autoware_planning_msgs/msg/path_point.hpp>
@@ -365,17 +364,6 @@ lanelet::LineString2d remove_const(const lanelet::ConstLineString2d & line_strin
   return line_string.inverted() ? linestring.invert() : linestring;
 }
 
-void add_bounds_linestring_to_map(
-  lanelet::LaneletMap & map, const lanelet::LineString2d & linestring_2d, const std::string & type)
-{
-  if (linestring_2d.empty()) {
-    return;
-  }
-  lanelet::LineString3d linestring = lanelet::utils::to3D(linestring_2d);
-  linestring.setAttribute(lanelet::AttributeName::Type, type);
-  map.add(linestring);
-}
-
 std::vector<lanelet::ConstLanelet> get_nearest_lanelets(
   const lanelet::LaneletMap & route_map, const lanelet::BasicPoint2d & search_point)
 {
@@ -419,18 +407,6 @@ std::optional<double> read_speed_limit_from_lanelet(const lanelet::ConstLanelet 
     return std::nullopt;
   }
   return v.get();
-}
-
-lanelet::LaneletMap build_debug_map(lanelet::LaneletMap & route_map)
-{
-  lanelet::LaneletMap debug_map;
-  for (const auto & lanelet : route_map.laneletLayer) {
-    debug_map.add(lanelet);
-  }
-  for (const auto & linestring : route_map.lineStringLayer) {
-    debug_map.add(linestring);
-  }
-  return debug_map;
 }
 }  // namespace
 
@@ -601,31 +577,6 @@ void ExtendedRouteHandler::create_map()
   extended_bounds_rtree_ = prepare_drivable_area_rtree(extended_route_bounds_);
 
   route_map_routing_graph_ = traffic_rules::create_goal_purpose_routing_graph(*route_map_);
-}
-
-void ExtendedRouteHandler::export_debug_map() const
-{
-  const auto package_share_directory =
-    ament_index_cpp::get_package_share_directory("autoware_avoidance_target_detector");
-  const auto debug_map_path_str = package_share_directory + "/debug_map.osm";
-
-  constexpr double origin_lat = 35.22312494103;
-  constexpr double origin_lon = 138.80245834626;
-  lanelet::Origin origin({origin_lat, origin_lon});
-  lanelet::projection::MGRSProjector projector(origin);
-  projector.setMGRSCode(lanelet::GPSPoint{origin_lat, origin_lon, 0.0});
-
-  auto debug_map = build_debug_map(*route_map_);
-
-  const auto original_bounds = get_original_route_bounds();
-  add_bounds_linestring_to_map(debug_map, original_bounds.first, "original_route");
-  add_bounds_linestring_to_map(debug_map, original_bounds.second, "original_route");
-
-  const auto extended_bounds = get_extended_route_bounds();
-  add_bounds_linestring_to_map(debug_map, extended_bounds.first, "extended_route");
-  add_bounds_linestring_to_map(debug_map, extended_bounds.second, "extended_route");
-
-  lanelet::write(debug_map_path_str, debug_map, projector);
 }
 
 std::vector<lanelet::LineString2d> ExtendedRouteHandler::get_road_borders() const
@@ -811,16 +762,27 @@ lanelet::BasicPolygon2d ExtendedRouteHandler::get_near_segment_polygon(
 std::optional<double> ExtendedRouteHandler::get_velocity_limit(
   const lanelet::BasicPoint2d & point) const
 {
+  return get_velocity_limit(point, {});
+}
+
+std::optional<double> ExtendedRouteHandler::get_velocity_limit(
+  const lanelet::BasicPoint2d & point, const VelocityLimitOverrides & overrides) const
+{
   const auto nearest_lanelets = get_nearest_lanelets(*route_map_, point);
   if (nearest_lanelets.empty()) {
     return std::nullopt;
   }
 
   std::optional<double> velocity_limit;
+  const auto read_velocity_limit = [&overrides](const lanelet::ConstLanelet & lanelet) {
+    const auto override = overrides.find(lanelet.id());
+    return override != overrides.end() ? std::make_optional(override->second)
+                                       : read_speed_limit_from_lanelet(lanelet);
+  };
 
   for (const auto & lanelet : nearest_lanelets) {
-    // If the lanelet has a speed limit attribute, use it.
-    const auto speed_limit = read_speed_limit_from_lanelet(lanelet);
+    // A debug override takes precedence over the lanelet attribute.
+    const auto speed_limit = read_velocity_limit(lanelet);
     if (speed_limit) {
       velocity_limit = (velocity_limit) ? std::min(*velocity_limit, *speed_limit) : *speed_limit;
       continue;
@@ -833,7 +795,7 @@ std::optional<double> ExtendedRouteHandler::get_velocity_limit(
       const auto right_lanelet =
         traffic_rules::get_right_lanelet(*extended_routing_graph_, lanelet);
       if (right_lanelet) {
-        const auto right_speed_limit = read_speed_limit_from_lanelet(*right_lanelet);
+        const auto right_speed_limit = read_velocity_limit(*right_lanelet);
         if (right_speed_limit) {
           velocity_limit =
             (velocity_limit) ? std::min(*velocity_limit, *right_speed_limit) : *right_speed_limit;
@@ -841,7 +803,7 @@ std::optional<double> ExtendedRouteHandler::get_velocity_limit(
         }
       }
       if (left_lanelet) {
-        const auto left_speed_limit = read_speed_limit_from_lanelet(*left_lanelet);
+        const auto left_speed_limit = read_velocity_limit(*left_lanelet);
         if (left_speed_limit) {
           velocity_limit =
             (velocity_limit) ? std::min(*velocity_limit, *left_speed_limit) : *left_speed_limit;
@@ -860,9 +822,21 @@ std::optional<double> ExtendedRouteHandler::get_velocity_limit(const lanelet::Po
 }
 
 std::optional<double> ExtendedRouteHandler::get_velocity_limit(
+  const lanelet::Point2d & point, const VelocityLimitOverrides & overrides) const
+{
+  return get_velocity_limit(lanelet::BasicPoint2d(point.x(), point.y()), overrides);
+}
+
+std::optional<double> ExtendedRouteHandler::get_velocity_limit(
   const geometry_msgs::msg::Point & point) const
 {
   return get_velocity_limit(lanelet::BasicPoint2d(point.x, point.y));
+}
+
+std::optional<double> ExtendedRouteHandler::get_velocity_limit(
+  const geometry_msgs::msg::Point & point, const VelocityLimitOverrides & overrides) const
+{
+  return get_velocity_limit(lanelet::BasicPoint2d(point.x, point.y), overrides);
 }
 
 Path to_path_msg(const RouteBounds & bounds, const Trajectory & trajectory)

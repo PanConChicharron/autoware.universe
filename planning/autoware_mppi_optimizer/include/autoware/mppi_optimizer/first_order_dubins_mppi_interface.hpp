@@ -70,6 +70,19 @@ struct FirstOrderDubinsMppiRollout
   bool is_worst{false};
 };
 
+/** Optional kinematic bounds supplied by external and map velocity-limit sources. */
+struct FirstOrderDubinsMppiKinematicLimits
+{
+  /** Global maximum supplied by the external VelocityLimit message. */
+  std::optional<float> max_velocity;
+  /** Optional map maximum aligned with each point of the input reference trajectory. */
+  std::vector<std::optional<float>> max_velocity_by_reference_point;
+  std::optional<float> min_longitudinal_acceleration;
+  std::optional<float> max_longitudinal_acceleration;
+  std::optional<float> min_longitudinal_jerk;
+  std::optional<float> max_longitudinal_jerk;
+};
+
 /** Host reconstruction of the cost assigned to the selected MPPI trajectory. */
 struct FirstOrderDubinsMppiCostBreakdown
 {
@@ -92,6 +105,9 @@ struct FirstOrderDubinsMppiCostBreakdown
   float lateral_jerk{0.0F};
   float longitudinal_jerk{0.0F};
   float steering_rate{0.0F};
+  float kinematic_velocity_overlimit{0.0F};
+  float kinematic_acceleration_overlimit{0.0F};
+  float kinematic_jerk_overlimit{0.0F};
   float running_total{0.0F};
   float terminal_total{0.0F};
   float total{0.0F};
@@ -104,7 +120,8 @@ struct FirstOrderDubinsMppiCostBreakdown
     return speed + track + heading + lateral_distance + lateral_boundary + lateral_yaw_error +
            remaining_distance + path_overshoot + track_center + corner_buffer + drivable_area +
            acceleration_command + steering_command + lateral_acceleration + lateral_jerk +
-           longitudinal_jerk + steering_rate + obstacle + road_border;
+           longitudinal_jerk + steering_rate + kinematic_velocity_overlimit +
+           kinematic_acceleration_overlimit + kinematic_jerk_overlimit + obstacle + road_border;
   }
 };
 
@@ -197,9 +214,18 @@ struct FirstOrderDubinsMppiDebug
   /** Cost of the final selected control rollout. */
   FirstOrderDubinsMppiCostBreakdown cost_breakdown;
   FirstOrderDubinsMppiTiming timing;
+  FirstOrderDubinsMppiKinematicLimits active_kinematic_limits;
   float baseline_cost{0.0F};
   /** Hard-constraint validation of the generated post-step states. */
   FirstOrderDubinsMppiValidationResult validation;
+  /** True while the deterministic external-only maximum-velocity profile is applied. */
+  bool external_velocity_limit_active{false};
+  /** True while any deterministic external/map maximum-velocity profile is applied. */
+  bool velocity_limit_profile_active{false};
+  /** True when at least one valid map-derived pointwise maximum was supplied. */
+  bool map_velocity_limit_active{false};
+  /** Effective external/map minimum aligned with reference_trajectory.points. */
+  std::vector<std::optional<float>> effective_max_velocity_by_reference_point;
   /** True when skip_if_invalid replaced the optimized trajectory with the input trajectory. */
   bool was_rejected{false};
 };
@@ -338,13 +364,16 @@ public:
    * @param road_borders Static road-border segments used by the gradual optimizer cost and hard
    *        output validator.
    * @param drivable_area Static drivable-area boundary segments used as a gradual constraint.
+   * @param kinematic_limits Optional external scalar and map pointwise velocity bounds, plus
+   *        external acceleration and jerk bounds.
    */
   FirstOrderDubinsMppiOptimizationResult optimizeTrajectory(
     const Trajectory & input, const Odometry & odometry,
     const std::optional<geometry_msgs::msg::AccelWithCovarianceStamped> & acceleration,
     const std::optional<autoware_vehicle_msgs::msg::SteeringReport> & steering_status,
     const TrackedObjects & tracked_objects, const std::vector<Segment> & road_borders,
-    const std::vector<Segment> & drivable_area);
+    const std::vector<Segment> & drivable_area,
+    const FirstOrderDubinsMppiKinematicLimits & kinematic_limits = {});
 
 private:
   struct Impl;

@@ -23,7 +23,9 @@
 #include <autoware_mppi_optimizer/trajectory_mppi_optimizer_parameters.hpp>
 #include <autoware_utils_debug/debug_publisher.hpp>
 #include <autoware_utils_diagnostics/diagnostics_interface.hpp>
+#include <autoware_utils_rclcpp/polling_subscriber.hpp>
 
+#include <autoware_internal_planning_msgs/msg/velocity_limit.hpp>
 #include <autoware_map_msgs/msg/lanelet_map_bin.hpp>
 #include <autoware_planning_msgs/msg/trajectory.hpp>
 #include <nav_msgs/msg/odometry.hpp>
@@ -37,6 +39,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace autoware::mppi_optimizer::plugin
@@ -69,6 +72,7 @@ protected:
 private:
   using MppiParams = trajectory_mppi_optimizer::Params;
   using Trajectory = autoware_planning_msgs::msg::Trajectory;
+  using VelocityLimit = autoware_internal_planning_msgs::msg::VelocityLimit;
   using MarkerArray = visualization_msgs::msg::MarkerArray;
   using DiagnosticsInterface = autoware_utils_diagnostics::DiagnosticsInterface;
 
@@ -116,11 +120,17 @@ private:
   std::optional<unique_identifier_msgs::msg::UUID> current_route_uuid_;
   double object_filter_margin_m_{0.0};
   double object_filter_prediction_extension_s_{0.0};
+  autoware::avoidance_target_detector::ExtendedRouteHandler::VelocityLimitOverrides
+    map_velocity_limit_overrides_;
+
+  std::shared_ptr<autoware_utils_rclcpp::InterProcessPollingSubscriber<VelocityLimit>>
+    velocity_limit_sub_;
 
   rclcpp::Publisher<Trajectory>::SharedPtr reference_trajectory_pub_;
   rclcpp::Publisher<Trajectory>::SharedPtr nominal_control_trajectory_pub_;
   rclcpp::Publisher<Trajectory>::SharedPtr optimized_trajectory_pub_;
   rclcpp::Publisher<Trajectory>::SharedPtr nominal_trajectory_pub_;
+  rclcpp::Publisher<Trajectory>::SharedPtr velocity_limit_trajectory_pub_;
   rclcpp::Publisher<MarkerArray>::SharedPtr markers_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr enabled_pub_;
   std::unique_ptr<autoware_utils_debug::DebugPublisher> debug_publisher_;

@@ -70,6 +70,58 @@ rclcpp::Logger mppiLogger()
   return rclcpp::get_logger(kLoggerName);
 }
 
+bool isValidSignedInterval(const std::optional<float> & lower, const std::optional<float> & upper)
+{
+  return lower && upper && std::isfinite(*lower) && std::isfinite(*upper) && *lower <= 0.0F &&
+         *upper >= 0.0F && *lower <= *upper;
+}
+
+FirstOrderDubinsMppiKinematicLimits sanitizeKinematicLimits(
+  const FirstOrderDubinsMppiKinematicLimits & input)
+{
+  FirstOrderDubinsMppiKinematicLimits result;
+  if (input.max_velocity && std::isfinite(*input.max_velocity) && *input.max_velocity >= 0.0F) {
+    result.max_velocity = input.max_velocity;
+  }
+  result.max_velocity_by_reference_point.reserve(input.max_velocity_by_reference_point.size());
+  for (const auto & maximum : input.max_velocity_by_reference_point) {
+    result.max_velocity_by_reference_point.push_back(
+      maximum && std::isfinite(*maximum) && *maximum >= 0.0F ? maximum : std::nullopt);
+  }
+  if (isValidSignedInterval(
+        input.min_longitudinal_acceleration, input.max_longitudinal_acceleration)) {
+    result.min_longitudinal_acceleration = input.min_longitudinal_acceleration;
+    result.max_longitudinal_acceleration = input.max_longitudinal_acceleration;
+  }
+  if (isValidSignedInterval(input.min_longitudinal_jerk, input.max_longitudinal_jerk)) {
+    result.min_longitudinal_jerk = input.min_longitudinal_jerk;
+    result.max_longitudinal_jerk = input.max_longitudinal_jerk;
+  }
+  return result;
+}
+
+FirstOrderDubinsBicycleKinematicLimitData makeKinematicLimitCostData(
+  const FirstOrderDubinsMppiKinematicLimits & limits)
+{
+  FirstOrderDubinsBicycleKinematicLimitData result;
+  if (limits.max_velocity) {
+    result.active_mask |= kVelocityLimitActive;
+    result.min_velocity = 0.0F;
+    result.max_velocity = *limits.max_velocity;
+  }
+  if (limits.min_longitudinal_acceleration && limits.max_longitudinal_acceleration) {
+    result.active_mask |= kAccelerationLimitActive;
+    result.min_longitudinal_acceleration = *limits.min_longitudinal_acceleration;
+    result.max_longitudinal_acceleration = *limits.max_longitudinal_acceleration;
+  }
+  if (limits.min_longitudinal_jerk && limits.max_longitudinal_jerk) {
+    result.active_mask |= kJerkLimitActive;
+    result.min_longitudinal_jerk = *limits.min_longitudinal_jerk;
+    result.max_longitudinal_jerk = *limits.max_longitudinal_jerk;
+  }
+  return result;
+}
+
 using DYN = FirstOrderDubinsBicycle;
 using COST = FirstOrderDubinsBicycleCost<kRefHorizon>;
 using FB = ZeroFeedback<DYN, kMppiHorizon>;
@@ -87,7 +139,7 @@ using SAMPLER = mppi::sampling_distributions::GaussianDistribution<DYN::DYN_PARA
 using Mppi = VanillaMPPIController<DYN, COST, FB, kMppiHorizon, kNumRollouts, SAMPLER>;
 using CostBreakdown = FirstOrderDubinsMppiCostBreakdown;
 
-constexpr std::array<float CostBreakdown::*, 22> kCostBreakdownFields = {
+constexpr std::array<float CostBreakdown::*, 25> kCostBreakdownFields = {
   &CostBreakdown::speed,
   &CostBreakdown::track,
   &CostBreakdown::heading,
@@ -107,6 +159,9 @@ constexpr std::array<float CostBreakdown::*, 22> kCostBreakdownFields = {
   &CostBreakdown::lateral_jerk,
   &CostBreakdown::longitudinal_jerk,
   &CostBreakdown::steering_rate,
+  &CostBreakdown::kinematic_velocity_overlimit,
+  &CostBreakdown::kinematic_acceleration_overlimit,
+  &CostBreakdown::kinematic_jerk_overlimit,
   &CostBreakdown::running_total,
   &CostBreakdown::terminal_total,
   &CostBreakdown::total,
@@ -205,7 +260,10 @@ std::string formatCostBreakdown(const CostBreakdown & cost)
          << ", lateral_accel=" << cost.lateral_acceleration
          << ", lateral_jerk=" << cost.lateral_jerk
          << ", longitudinal_jerk=" << cost.longitudinal_jerk
-         << ", steer_rate=" << cost.steering_rate << '}';
+         << ", steer_rate=" << cost.steering_rate
+         << ", velocity_overlimit=" << cost.kinematic_velocity_overlimit
+         << ", acceleration_overlimit=" << cost.kinematic_acceleration_overlimit
+         << ", jerk_overlimit=" << cost.kinematic_jerk_overlimit << '}';
   return stream.str();
 }
 
@@ -214,6 +272,14 @@ class MppiWithHistoryAccess : public Mppi
 {
 public:
   using Mppi::Mppi;
+
+  /** Replace the vendor-smoothed sequence and keep its host state rollout consistent. */
+  void setControlSequenceAndRecomputeState(
+    const Mppi::control_trajectory & controls, const Mppi::state_array & initial_state)
+  {
+    this->control_ = controls;
+    this->computeStateTrajectory(initial_state);
+  }
 
   void setControlHistory(
     const float accel_tm2, const float steer_tm2, const float accel_tm1, const float steer_tm1)
@@ -268,6 +334,7 @@ void applyUserCostParams(
   cost_params.accel_cmd_coeff = user.accel_cmd_coeff;
   cost_params.steer_cmd_coeff = user.steer_cmd_coeff;
   cost_params.steer_rate_coeff = user.steer_rate_coeff;
+  cost_params.overlimit_coeff = user.overlimit_coeff;
   cost_params.lateral_acceleration_coeff = user.lateral_acceleration_coeff;
   cost_params.lateral_jerk_coeff = user.lateral_jerk_coeff;
   cost_params.longitudinal_jerk_coeff = user.longitudinal_jerk_coeff;
@@ -628,6 +695,11 @@ struct FirstOrderDubinsMppiInterface::Impl
   FirstOrderDubinsBicycleParams dyn;
   FirstOrderDubinsMppiVehicleParams vehicle_params{};
   FirstOrderDubinsMppiCostParams user_cost_params_{};
+  FirstOrderDubinsMppiKinematicLimits active_kinematic_limits{};
+  std::vector<std::optional<float>> effective_max_velocity_by_reference_point;
+  std::optional<float> uniform_effective_max_velocity;
+  bool has_map_velocity_limit{false};
+  detail::ActiveVelocityLimitProfile active_velocity_limit_profile;
   MppiDebugTrajectoryLogger debug_trajectory_logger;
   COST cost;
   FirstOrderDubinsBicycleCostParams<kRefHorizon> cost_params{};
@@ -851,6 +923,25 @@ struct FirstOrderDubinsMppiInterface::Impl
     }
     dyn.acc_delay_steps = acc_delay_steps;
     dyn.steer_delay_steps = steer_delay_steps;
+    model.setParams(dyn);
+  }
+
+  /// @brief Elevate active limits to hard rollout constraints. If no dynamic limit is active,
+  /// fallback to the vehicle's physical hardware limits.
+  void syncKinematicLimitsToModel()
+  {
+    dyn.min_accel =
+      active_kinematic_limits.min_longitudinal_acceleration
+        ? std::max(
+            vehicle_params.min_accel(), *active_kinematic_limits.min_longitudinal_acceleration)
+        : vehicle_params.min_accel();
+
+    dyn.max_accel =
+      active_kinematic_limits.max_longitudinal_acceleration
+        ? std::min(
+            vehicle_params.max_accel(), *active_kinematic_limits.max_longitudinal_acceleration)
+        : vehicle_params.max_accel();
+
     model.setParams(dyn);
   }
 
@@ -1088,6 +1179,21 @@ struct FirstOrderDubinsMppiInterface::Impl
     }
   }
 
+  void applyActiveVelocityLimitToNominal()
+  {
+    if (!active_velocity_limit_profile.active) {
+      return;
+    }
+    const int accel_idx =
+      static_cast<int>(FirstOrderDubinsBicycleParams::ControlIndex::ACCELERATION_CMD);
+    const int count =
+      std::min(kMppiHorizon, static_cast<int>(active_velocity_limit_profile.controls.size()));
+    for (int timestep = 0; timestep < count; ++timestep) {
+      u_nom(accel_idx, timestep) =
+        active_velocity_limit_profile.controls[static_cast<std::size_t>(timestep)].accel_cmd;
+    }
+  }
+
   void seedNominalControlFromForced()
   {
     const int accel_idx =
@@ -1098,6 +1204,24 @@ struct FirstOrderDubinsMppiInterface::Impl
     for (int t = 0; t < kMppiHorizon; ++t) {
       u_nom(accel_idx, t) = nominal[static_cast<size_t>(t)].accel_cmd;
       u_nom(steer_idx, t) = nominal[static_cast<size_t>(t)].steer_cmd;
+    }
+  }
+
+  void filterNominalControl(const detail::InitialState & ego)
+  {
+    const int accel_idx =
+      static_cast<int>(FirstOrderDubinsBicycleParams::ControlIndex::ACCELERATION_CMD);
+    const int steer_idx = static_cast<int>(FirstOrderDubinsBicycleParams::ControlIndex::STEER_CMD);
+    std::vector<FirstOrderDubinsMppiControl> nominal(static_cast<size_t>(kMppiHorizon));
+    for (int t = 0; t < kMppiHorizon; ++t) {
+      nominal[static_cast<size_t>(t)] = {u_nom(accel_idx, t), u_nom(steer_idx, t)};
+    }
+    const auto filtered = detail::filterNominalControlWithKinematicLimits(
+      nominal, ego, active_kinematic_limits, vehicle_params, acc_delay_steps, accel_delay_buffer,
+      kDt);
+    for (int t = 0; t < kMppiHorizon; ++t) {
+      u_nom(accel_idx, t) = filtered[static_cast<size_t>(t)].accel_cmd;
+      u_nom(steer_idx, t) = filtered[static_cast<size_t>(t)].steer_cmd;
     }
   }
 
@@ -1120,8 +1244,19 @@ struct FirstOrderDubinsMppiInterface::Impl
     if (forced_nominal_pending) {
       seedNominalControlFromForced();
       forced_nominal_pending = false;
-      snapshotNominalForLog();
-      return;
+    } else {
+      // After a tracking reset, step_count is 0 and u_opt was cleared — fall back to DP / MPT
+      // seed. Also reseed when departing from a stop: shifted last u_opt is usually near-zero /
+      // braking.
+      constexpr float kStoppedVelocityMps = 0.05F;
+      const bool started_from_stop = std::abs(ego.velocity) < kStoppedVelocityMps;
+      if (use_last_control_as_nominal && step_count > 0 && !started_from_stop) {
+        seedNominalControlFromLastOptimized();
+      } else if (use_temporal_mpt_as_nominal) {
+        // seedNominalControlFromTemporalMpt(reference, ego);
+      } else {
+        seedNominalControlFromDiffusionReference(reference, start_idx);
+      }
     }
     // After a tracking reset, step_count is 0 and u_opt was cleared — fall back to DP / MPT seed.
     // Also reseed when departing from a stop: shifted last u_opt is usually near-zero / braking.
@@ -1150,6 +1285,7 @@ struct FirstOrderDubinsMppiInterface::Impl
         temporal_mpt_nominal_seeder.resetWarmStart();
       }
       seedNominalControlFromTemporalMpt(reference, ego);
+      filterNominalControl(ego);
       snapshotNominalForLog();
       return;
     }
@@ -1159,6 +1295,7 @@ struct FirstOrderDubinsMppiInterface::Impl
       return;
     }
     seedNominalControlFromDiffusionReference(reference, start_idx);
+    filterNominalControl(ego);
     snapshotNominalForLog();
   }
 
@@ -1167,7 +1304,8 @@ struct FirstOrderDubinsMppiInterface::Impl
     const std::optional<geometry_msgs::msg::AccelWithCovarianceStamped> & acceleration,
     const std::optional<autoware_vehicle_msgs::msg::SteeringReport> & steering_status,
     const TrackedObjects & tracked_objects_in, const std::vector<Segment> & road_borders_in,
-    const std::vector<Segment> & drivable_area_in)
+    const std::vector<Segment> & drivable_area_in,
+    const FirstOrderDubinsMppiKinematicLimits & kinematic_limits)
   {
     if (!initialized) {
       setup();
@@ -1178,6 +1316,19 @@ struct FirstOrderDubinsMppiInterface::Impl
     }
 
     diffusion_reference = reference;
+    active_kinematic_limits = sanitizeKinematicLimits(kinematic_limits);
+    effective_max_velocity_by_reference_point = detail::buildEffectiveMaximumVelocityProfile(
+      diffusion_reference.points.size(), active_kinematic_limits);
+    uniform_effective_max_velocity =
+      detail::getUniformMaximumVelocity(effective_max_velocity_by_reference_point);
+    has_map_velocity_limit = std::any_of(
+      active_kinematic_limits.max_velocity_by_reference_point.begin(),
+      active_kinematic_limits.max_velocity_by_reference_point.end(),
+      [](const auto & value) { return value.has_value(); });
+    auto cost_limits = active_kinematic_limits;
+    cost_limits.max_velocity = uniform_effective_max_velocity;
+    cost.setKinematicLimits(makeKinematicLimitCostData(cost_limits));
+    syncKinematicLimitsToModel();
     diffusion_reference_chord_length_s = detail::computeCumulativeChordLength(diffusion_reference);
     tracked_objects = ignore_obstacles ? TrackedObjects{} : tracked_objects_in;
     road_borders = ignore_road_borders ? std::vector<Segment>() : road_borders_in;
@@ -1210,9 +1361,49 @@ struct FirstOrderDubinsMppiInterface::Impl
     const auto initial_state =
       detail::makeInitialState(odometry, acceleration, steering_status, vehicle_params);
     const auto seed_t0 = std::chrono::steady_clock::now();
-    seedNominalControl(reference, tracking_start_idx, initial_state);
     last_seed_nominal_ms =
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - seed_t0).count();
+    const std::vector<FirstOrderDubinsMppiControl> profile_seed(
+      std::max(static_cast<std::size_t>(kMppiHorizon), diffusion_reference.points.size()));
+    std::vector<float> profile_reference_velocities(profile_seed.size(), 0.0F);
+    if (!diffusion_reference.points.empty()) {
+      for (std::size_t index = 0; index < profile_reference_velocities.size(); ++index) {
+        profile_reference_velocities[index] =
+          diffusion_reference.points[std::min(index, diffusion_reference.points.size() - 1U)]
+            .longitudinal_velocity_mps;
+      }
+    }
+    const auto next_profile_maximums =
+      detail::buildEffectiveMaximumVelocityProfile(profile_seed.size(), active_kinematic_limits);
+    const auto next_uniform_maximum = detail::getUniformMaximumVelocity(next_profile_maximums);
+    constexpr float kSameVelocityLimitToleranceMps = 1.0E-3F;
+    const bool same_uniform_velocity_limit =
+      next_uniform_maximum &&
+      std::abs(*next_uniform_maximum - active_velocity_limit_profile.target_velocity) <=
+        kSameVelocityLimitToleranceMps;
+    const bool same_pointwise_velocity_limits =
+      next_profile_maximums.size() == active_velocity_limit_profile.maximum_velocities.size() &&
+      std::equal(
+        next_profile_maximums.begin(), next_profile_maximums.end(),
+        active_velocity_limit_profile.maximum_velocities.begin(),
+        [](const auto & lhs, const auto & rhs) {
+          if (lhs.has_value() != rhs.has_value()) {
+            return false;
+          }
+          return !lhs || std::abs(*lhs - *rhs) <= kSameVelocityLimitToleranceMps;
+        });
+    const bool keep_velocity_limit_active =
+      active_velocity_limit_profile.active &&
+      (same_uniform_velocity_limit || same_pointwise_velocity_limits);
+    active_velocity_limit_profile = detail::buildActiveVelocityLimitProfile(
+      profile_seed, initial_state, active_kinematic_limits, vehicle_params, acc_delay_steps,
+      accel_delay_buffer, kDt, keep_velocity_limit_active, profile_reference_velocities);
+    detail::applyActiveVelocityLimitProfile(diffusion_reference, active_velocity_limit_profile);
+    seedNominalControl(diffusion_reference, tracking_start_idx, initial_state);
+    applyActiveVelocityLimitToNominal();
+    if (active_velocity_limit_profile.active) {
+      snapshotNominalForLog();
+    }
 
     x = model.getZeroState();
     x(static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::POS_X)) = initial_state.x;
@@ -1253,9 +1444,15 @@ struct FirstOrderDubinsMppiInterface::Impl
     ego.y = x(static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::POS_Y));
     ego.yaw = x(static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::YAW));
     ego.velocity = x(static_cast<int>(FirstOrderDubinsBicycleParams::StateIndex::VEL_X));
-    const auto prepared_reference = detail::buildReferenceHorizon(
+    auto prepared_reference = detail::buildReferenceHorizon(
       diffusion_reference, ego, kRefHorizon, kDt, tracking_start_idx,
-      &diffusion_reference_chord_length_s);
+      &diffusion_reference_chord_length_s,
+      uniform_effective_max_velocity ? nullptr : &effective_max_velocity_by_reference_point);
+    if (uniform_effective_max_velocity && !active_velocity_limit_profile.active) {
+      for (auto & sample : prepared_reference) {
+        sample.velocity = std::clamp(sample.velocity, 0.0F, *uniform_effective_max_velocity);
+      }
+    }
     std::vector<mppi::path::PathReferenceSample> ref(prepared_reference.size());
     for (size_t i = 0; i < prepared_reference.size(); ++i) {
       ref[i].t = prepared_reference[i].time;
@@ -1264,6 +1461,10 @@ struct FirstOrderDubinsMppiInterface::Impl
       ref[i].yaw = prepared_reference[i].yaw;
       ref[i].v = prepared_reference[i].velocity;
       ref[i].arc_length_s = prepared_reference[i].arc_length_s;
+      if (prepared_reference[i].max_velocity) {
+        ref[i].max_velocity = *prepared_reference[i].max_velocity;
+        ref[i].velocity_limit_active = 1U;
+      }
     }
     mppi::cost::fillFirstOrderDubinsBicycleCostFromPathReference<kRefHorizon>(cost, ref);
 
@@ -1327,7 +1528,21 @@ struct FirstOrderDubinsMppiInterface::Impl
     cudaStreamSynchronize(controller->stream_);
     checkCuda("computeControl");
 
-    const Mppi::control_trajectory u_opt_traj = controller->getControlSeq();
+    Mppi::control_trajectory u_opt_traj = controller->getControlSeq();
+    if (active_velocity_limit_profile.active) {
+      const int accel_idx =
+        static_cast<int>(FirstOrderDubinsBicycleParams::ControlIndex::ACCELERATION_CMD);
+      const int count = std::min(
+        static_cast<int>(u_opt_traj.cols()),
+        static_cast<int>(active_velocity_limit_profile.controls.size()));
+      for (int timestep = 0; timestep < count; ++timestep) {
+        u_opt_traj(accel_idx, timestep) =
+          active_velocity_limit_profile.controls[static_cast<std::size_t>(timestep)].accel_cmd;
+      }
+      // The vendor Savitzky-Golay filter remains unchanged and executes first. Project its
+      // longitudinal result onto the active profile and reconstruct the host state rollout.
+      controller->setControlSequenceAndRecomputeState(u_opt_traj, x);
+    }
     u_opt = u_opt_traj;
 
     DYN::control_array u_apply = u_opt_traj.col(0);
@@ -1418,6 +1633,12 @@ void FirstOrderDubinsMppiInterface::setCostParams(const FirstOrderDubinsMppiCost
 {
   if (!impl_) {
     throw std::runtime_error("FirstOrderDubinsMppiInterface implementation is missing");
+  }
+  if (
+    !std::isfinite(params.overlimit_coeff) || params.overlimit_coeff < 0.0F ||
+    !std::isfinite(params.crash_contact_penalty) || params.crash_contact_penalty < 0.0F) {
+    throw std::invalid_argument(
+      "MPPI overlimit_coeff and crash_contact_penalty must be finite and non-negative");
   }
   if (impl_->initialized) {
     impl_->teardown();
@@ -1633,7 +1854,8 @@ FirstOrderDubinsMppiOptimizationResult FirstOrderDubinsMppiInterface::optimizeTr
   const std::optional<geometry_msgs::msg::AccelWithCovarianceStamped> & acceleration,
   const std::optional<autoware_vehicle_msgs::msg::SteeringReport> & steering_status,
   const TrackedObjects & tracked_objects, const std::vector<Segment> & road_borders,
-  const std::vector<Segment> & drivable_area)
+  const std::vector<Segment> & drivable_area,
+  const FirstOrderDubinsMppiKinematicLimits & kinematic_limits)
 {
   if (!impl_) {
     throw std::runtime_error("FirstOrderDubinsMppiInterface implementation is missing");
@@ -1657,7 +1879,8 @@ FirstOrderDubinsMppiOptimizationResult FirstOrderDubinsMppiInterface::optimizeTr
   const auto start_time = std::chrono::steady_clock::now();
 
   impl_->updateDiffusionReference(
-    input, odometry, acceleration, steering_status, tracked_objects, road_borders, drivable_area);
+    input, odometry, acceleration, steering_status, tracked_objects, road_borders, drivable_area,
+    kinematic_limits);
   // Capture IC before runStep advances the ego state with the applied control.
   const DYN::state_array x_at_optimization = impl_->x;
   const FirstOrderDubinsMppiControl control = impl_->runStep();
@@ -1726,6 +1949,21 @@ FirstOrderDubinsMppiOptimizationResult FirstOrderDubinsMppiInterface::optimizeTr
   }
 
   Trajectory output = detail::buildOptimizedTrajectory(input, optimized_states, optimized_controls);
+  if (impl_->active_velocity_limit_profile.active) {
+    // buildOptimizedTrajectory intentionally preserves the suffix outside the MPPI horizon.
+    // An active velocity profile must not allow that suffix to jump back to its input speed.
+    const auto & profile = impl_->active_velocity_limit_profile;
+    for (std::size_t index = num_points; index < output.points.size(); ++index) {
+      auto & point = output.points[index];
+      if (index < profile.velocities.size()) {
+        point.longitudinal_velocity_mps = profile.velocities[index];
+        point.acceleration_mps2 = profile.accelerations[index];
+      } else {
+        point.longitudinal_velocity_mps = profile.target_velocity;
+        point.acceleration_mps2 = 0.0F;
+      }
+    }
+  }
 
   // Validate only states that come from getActualStateSeq. The host-extrapolated x_final
   // (vendor GPU/host horizon mismatch) is appended so the published path matches the DP
@@ -1755,11 +1993,19 @@ FirstOrderDubinsMppiOptimizationResult FirstOrderDubinsMppiInterface::optimizeTr
     max_vel_delta = std::max(max_vel_delta, std::abs(state.velocity - ref_v));
   }
 
-  detail::setInitialEngageVelocity(output);
+  const auto initial_effective_maximum =
+    !impl_->effective_max_velocity_by_reference_point.empty()
+      ? impl_->effective_max_velocity_by_reference_point.front()
+      : std::nullopt;
+  detail::setInitialEngageVelocity(output, initial_effective_maximum);
 
   result.trajectory = output;
   result.debug.reference_trajectory = input;
   result.debug.optimized_trajectory = output;
+  result.debug.active_kinematic_limits = impl_->active_kinematic_limits;
+  result.debug.effective_max_velocity_by_reference_point =
+    impl_->effective_max_velocity_by_reference_point;
+  result.debug.map_velocity_limit_active = impl_->has_map_velocity_limit;
   result.debug.nominal_trajectory = buildNominalTrajectory(
     impl_->model, x_at_optimization, input, impl_->logged_nominal_accel,
     impl_->logged_nominal_steer);
@@ -1768,6 +2014,9 @@ FirstOrderDubinsMppiOptimizationResult FirstOrderDubinsMppiInterface::optimizeTr
   result.debug.nominal_control_profile.acceleration_commands_mps2 = impl_->logged_nominal_accel;
   result.debug.nominal_control_profile.steering_commands_rad = impl_->logged_nominal_steer;
   result.debug.validation = validation;
+  result.debug.velocity_limit_profile_active = impl_->active_velocity_limit_profile.active;
+  result.debug.external_velocity_limit_active =
+    impl_->active_velocity_limit_profile.active && impl_->active_kinematic_limits.max_velocity;
   if (impl_->enable_rollout_visualization) {
     buildRolloutVisualization(
       *impl_->controller, impl_->sampler, impl_->model, x_at_optimization,
@@ -1815,7 +2064,7 @@ FirstOrderDubinsMppiOptimizationResult FirstOrderDubinsMppiInterface::optimizeTr
     impl_->logged_nominal_steer, road_borders, drivable_area, tracked_objects,
     impl_->logged_hist_accel_tm2, impl_->logged_hist_steer_tm2, impl_->logged_hist_accel_tm1,
     impl_->logged_hist_steer_tm1, impl_->logged_delay_accel, impl_->logged_delay_steer,
-    impl_->logged_applied_accel, impl_->logged_applied_steer);
+    impl_->logged_applied_accel, impl_->logged_applied_steer, impl_->active_kinematic_limits);
 
   const auto validation_reasons = to_string(result.debug.validation.reasons);
   const auto cost_breakdown = formatCostBreakdown(result.debug.cost_breakdown);
@@ -1837,8 +2086,10 @@ FirstOrderDubinsMppiOptimizationResult FirstOrderDubinsMppiInterface::optimizeTr
 
   if (impl_->skip_if_invalid && !validation.isValid()) {
     result.trajectory = input;
+    detail::applyActiveVelocityLimitProfile(
+      result.trajectory, impl_->active_velocity_limit_profile);
     result.debug.reference_trajectory = input;
-    result.debug.optimized_trajectory = input;
+    result.debug.optimized_trajectory = result.trajectory;
     // Keep nominal_trajectory: still shows the warm-start open-loop path.
     result.debug.was_rejected = true;
     RCLCPP_WARN(
